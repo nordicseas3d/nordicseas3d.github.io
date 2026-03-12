@@ -3483,7 +3483,7 @@ export default function App() {
                       </svg>
                     </a>
                     <a
-                      href="https://github.com/greenlandsea/greenlandsea.github.io"
+                      href="https://github.com/nordicseas3d/nordicseas3d.github.io"
                       target="_blank"
                       rel="noreferrer"
                       aria-label="GitHub"
