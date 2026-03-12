@@ -1,0 +1,7 @@
+{
+  "units": "seconds since 1993-08-01",
+  "calendar": "gregorian",
+  "_ARRAY_DIMENSIONS": [
+    "time"
+  ]
+}
