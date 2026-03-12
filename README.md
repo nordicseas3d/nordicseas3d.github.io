@@ -1,85 +1,70 @@
-# Nordic Seas Explorer
+# Nordic Seas
 
-Interactive Nordic Seas visualization (Plotly + React + Vite) for:
+Interactive browser viewer for Nordic Seas temperature and salinity fields. The app loads a Zarr store directly in the browser and renders slices over a 3D bathymetry surface with Plotly.
 
-- 3D bathymetry background
-- Horizontal `T` / `S` slices (lon–lat at selected depth)
-- Vertical transects (lon–depth at selected latitude)
-- Class mode (e.g. temperature/salinity classes in 3D)
-- Time animation (movie mode)
-- Optional overlay: sea ice concentration
+## What the app supports
+
+- Horizontal maps at a selected depth and time
+- Zonal sections at a selected latitude
+- Draw-your-own transects between two clicked map points
+- 3D class view for value bands
+- Time animation
+- Optional sea-ice overlay
+- Basin masking for the GSR, Greenland Sea, Iceland Sea, and Norwegian Sea
+- Adjustable color scales, contours, opacity, and vertical exaggeration
+
+## Stack
+
+- React 18
+- TypeScript
+- Vite
+- Plotly
+- `zarrita` for client-side Zarr access
 
 
 ## Data layout
 
-### Zarr dataset (primary data source)
+### Zarr store
 
-Place a Zarr store in one of:
+The app looks for a readable Zarr store in this order:
 
-- `public/data/nordic.zarr/` (default)
-- `public/data/nordicseas.zarr/`
-- `public/data/greenlandsea.zarr/` (legacy fallback)
-- `public/data/GS_web.zarr/`
+- `public/data/nordic.zarr/`
 
-The app reads variables:
+Expected variables:
 
 - Required: `T`, `S`
 - Optional: `SIarea`
 
-Coordinate arrays are read from the store when available (`lon`, `lat`, `time`, `Z`).
+Coordinate handling:
 
-### Bathymetry (3D background)
+- Uses `lon`, `lat`, `time`, and `Z` when available
+- Falls back to `drF` to derive depth centers if `Z` is missing
+- Falls back to bathymetry JSON for lon/lat if coordinate arrays cannot be read
 
-Supported files (see `public/data/README.md`):
+The sample dataset bundled in this repo is `public/data/nordic.zarr/`. Its consolidated metadata shows:
 
-- `public/data/nordic.json` (default)
-- `public/data/greenlandsea.json` (legacy fallback)
-- `public/data/bathy.json` (fallback)
-- `public/data/bathy_RTopo_ds.json` (recommended if available)
-- `public/data/bathy_RTopo.json` (high resolution but large)
+- `T`: `[73, 72, 400, 400]`
+- `S`: `[73, 72, 400, 400]`
+- `SIarea`: `[73, 400, 400]`
 
-See `public/data/README.md` for format details.
+### Bathymetry
 
-## UI summary
+The 3D basemap is loaded from the first available bathymetry JSON:
 
-### View modes
+- `public/data/nordic.json`
 
-- **Horizontal**: choose time + depth, render a lon–lat slice over 3D bathymetry
-- **Transect**: choose time + latitude, render a lon–depth curtain
-- **Class**: render discrete `T`/`S` classes in 3D space
 
-### Controls
+## Deployment
 
-- Variable (`T` / `S`)
-- Time slider + movie toggle/FPS
-- Color scale min/max, ticks, colormap, discrete/continuous mode
-- Bathymetry/contour toggles
-- Sea ice overlay toggle
-- Depth scaling / vertical exaggeration controls
-- Camera reset and day/night theme toggle
-- Feedback links (webpage, GitHub, LinkedIn, email)
+This project is static-site friendly. The included GitHub Actions workflow builds `dist/` and deploys it to GitHub Pages.
 
-## Hosting / GitHub Pages
+If the Zarr store is too large for Pages, set the repository variable `GS_ZARR_URL` so the built site reads a remote store instead of bundling or serving the local default.
 
-This app is static-site friendly (Zarr chunks are fetched directly by the browser).
+## Notes
 
-- Repo: `nordicseas2` (local transfer)
-- You can override dataset URL with:
-  - query param: `?store=https://.../nordic.zarr`
-  - env var: `VITE_GS_ZARR_URL`
-
-## References
-
-D. Jian, X. Zhai, D. P. Stevens, I. Renfrew (2026)  
-**Oceanic Heat Transport Along the Norwegian Atlantic Slope Current and the Role of Eddies**  
-*Journal of Geophysical Research: Oceans*  
-https://doi.org/10.1029/2025JC022960
-
-D. Jian, X. Zhai, D. P. Stevens, I. Renfrew (2026)  
-**Long-lived anticyclonic eddies promote progressive convection in the Greenland Sea**  
-*Submitted to Geophysical Research Letters*  (Brutally rejected)
+- `vite.config.ts` uses `base: "./"` so the built site works from GitHub Pages subpaths and local file-style hosting.
+- `public/maps/README.md` documents an older image-drop workflow. The current app path is the Zarr-backed 3D viewer described above.
 
 ## Links
 
-- Nordic Seas Flow Visualization: https://nordicseas.github.io/
-- Personal webpage: https://bve23zsu.github.io/
+- Nordic Seas Ocean Circulation: https://nordicseas.github.io/
