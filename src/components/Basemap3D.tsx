@@ -2185,7 +2185,7 @@ export default function Basemap3D(props: {
       const opacity = numericT.opacity ?? 0.9;
       traces.push({
         type: "surface",
-        name: "Transect",
+        name: "Zonal",
         x: xCurtain as any,
         y: yCurtain as any,
         z: zCurtain as any,

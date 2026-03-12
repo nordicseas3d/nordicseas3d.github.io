@@ -724,43 +724,63 @@ function detectZeroHaloBoundaries(
   }
   if (nz <= 0 || ny <= 0 || nx <= 0) return { maskedRows, maskedCols };
   const depthChecks = Math.min(nz, 2);
+  const sparseHaloZeroFraction = 0.98;
+  const sparseHaloMaxNonZero = depthChecks * 4;
 
-  const rowIsZeroHalo = (row: number) => {
+  const summarizeRow = (row: number) => {
+    let finite = 0;
+    let zero = 0;
+    let nonZero = 0;
     for (let k = 0; k < depthChecks; k++) {
       const base = k * ny * nx + row * nx;
       for (let i = 0; i < nx; i++) {
         const value = Number(data[base + i]);
-        if (!Number.isFinite(value) || value !== 0) return false;
+        if (!Number.isFinite(value)) continue;
+        finite += 1;
+        if (value === 0) zero += 1;
+        else nonZero += 1;
       }
     }
-    return true;
+    return { finite, zero, nonZero };
   };
 
-  const colIsZeroHalo = (col: number) => {
+  const summarizeCol = (col: number) => {
+    let finite = 0;
+    let zero = 0;
+    let nonZero = 0;
     for (let k = 0; k < depthChecks; k++) {
       const base = k * ny * nx;
       for (let j = 0; j < ny; j++) {
         const value = Number(data[base + j * nx + col]);
-        if (!Number.isFinite(value) || value !== 0) return false;
+        if (!Number.isFinite(value)) continue;
+        finite += 1;
+        if (value === 0) zero += 1;
+        else nonZero += 1;
       }
     }
-    return true;
+    return { finite, zero, nonZero };
+  };
+
+  const countsLookLikeZeroHalo = (counts: { finite: number; zero: number; nonZero: number }) => {
+    if (counts.finite <= 0 || counts.zero <= 0) return false;
+    if (counts.nonZero === 0) return true;
+    return counts.zero / counts.finite >= sparseHaloZeroFraction && counts.nonZero <= sparseHaloMaxNonZero;
   };
 
   for (let row = 0; row < ny; row++) {
-    if (!rowIsZeroHalo(row)) break;
+    if (!countsLookLikeZeroHalo(summarizeRow(row))) break;
     maskedRows.add(row);
   }
   for (let row = ny - 1; row >= 0; row--) {
-    if (!rowIsZeroHalo(row)) break;
+    if (!countsLookLikeZeroHalo(summarizeRow(row))) break;
     maskedRows.add(row);
   }
   for (let col = 0; col < nx; col++) {
-    if (!colIsZeroHalo(col)) break;
+    if (!countsLookLikeZeroHalo(summarizeCol(col))) break;
     maskedCols.add(col);
   }
   for (let col = nx - 1; col >= 0; col--) {
-    if (!colIsZeroHalo(col)) break;
+    if (!countsLookLikeZeroHalo(summarizeCol(col))) break;
     maskedCols.add(col);
   }
 
@@ -2652,7 +2672,7 @@ export default function App() {
                       className={`tab ${viewMode === "transect" ? "tabActive" : ""}`}
                       onClick={() => setViewMode("transect")}
                     >
-                      Transect
+                      Zonal
                     </button>
                     <button
                       className={`tab ${viewMode === "draw" ? "tabActive" : ""}`}
