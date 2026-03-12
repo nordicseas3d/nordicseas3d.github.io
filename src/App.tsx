@@ -111,6 +111,13 @@ type EddyClusterRender = {
   hoverText: string;
 };
 
+const VIEW_MODE_DESCRIPTIONS: Record<Exclude<ViewMode, "eddies">, string> = {
+  horizontal: "Horizontal: view the selected variable on a constant-depth map slice.",
+  transect: "Zonal: view a west-east section along a selected latitude.",
+  draw: "Draw: click two points on the map to sample an arbitrary transect.",
+  class: "Class: show 3D point clouds for value bands through the water column.",
+};
+
 const PLAYBACK_SURFACE_MAX = 180;
 const PLAYBACK_TRANSECT_LON_MAX = 220;
 const PLAYBACK_TRANSECT_DEPTH_MAX = 110;
@@ -979,6 +986,7 @@ export default function App() {
   }, [themeMode]);
 
   const [viewMode, setViewMode] = useState<ViewMode>("horizontal");
+  const [viewModeHover, setViewModeHover] = useState<Exclude<ViewMode, "eddies"> | null>(null);
   const [varId, setVarId] = useState<VarId>("T");
   const projectOn3d = true;
   const [overlayOpacity, setOverlayOpacity] = useState(0.9);
@@ -1469,6 +1477,11 @@ export default function App() {
   }, [drawnTransectPath, meta, transectLatActual, viewMode]);
 
   const drawTransectLengthKm = drawnTransectPath?.totalDistanceKm ?? 0;
+  const viewModeDescription =
+    VIEW_MODE_DESCRIPTIONS[(viewModeHover ?? (viewMode === "eddies" ? "horizontal" : viewMode)) as Exclude<
+      ViewMode,
+      "eddies"
+    >];
   const drawTransectHint =
     !drawTransectArmed && drawTransectPoints.length < 2
       ? 'Draw mode is idle. Click "Redraw line" or clear the line to start a new transect.'
@@ -2665,28 +2678,49 @@ export default function App() {
                     <button
                       className={`tab ${viewMode === "horizontal" ? "tabActive" : ""}`}
                       onClick={() => setViewMode("horizontal")}
+                      onMouseEnter={() => setViewModeHover("horizontal")}
+                      onMouseLeave={() => setViewModeHover(null)}
+                      onFocus={() => setViewModeHover("horizontal")}
+                      onBlur={() => setViewModeHover(null)}
+                      title={VIEW_MODE_DESCRIPTIONS.horizontal}
                     >
                       Horizontal
                     </button>
                     <button
                       className={`tab ${viewMode === "transect" ? "tabActive" : ""}`}
                       onClick={() => setViewMode("transect")}
+                      onMouseEnter={() => setViewModeHover("transect")}
+                      onMouseLeave={() => setViewModeHover(null)}
+                      onFocus={() => setViewModeHover("transect")}
+                      onBlur={() => setViewModeHover(null)}
+                      title={VIEW_MODE_DESCRIPTIONS.transect}
                     >
                       Zonal
                     </button>
                     <button
                       className={`tab ${viewMode === "draw" ? "tabActive" : ""}`}
                       onClick={() => setViewMode("draw")}
+                      onMouseEnter={() => setViewModeHover("draw")}
+                      onMouseLeave={() => setViewModeHover(null)}
+                      onFocus={() => setViewModeHover("draw")}
+                      onBlur={() => setViewModeHover(null)}
+                      title={VIEW_MODE_DESCRIPTIONS.draw}
                     >
                       Draw
                     </button>
                     <button
                       className={`tab ${viewMode === "class" ? "tabActive" : ""}`}
                       onClick={() => setViewMode("class")}
+                      onMouseEnter={() => setViewModeHover("class")}
+                      onMouseLeave={() => setViewModeHover(null)}
+                      onFocus={() => setViewModeHover("class")}
+                      onBlur={() => setViewModeHover(null)}
+                      title={VIEW_MODE_DESCRIPTIONS.class}
                     >
                       Class
                     </button>
                   </div>
+                  <div className="hint">{viewModeDescription}</div>
 
                   <label>
                     Variable
