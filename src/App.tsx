@@ -112,10 +112,14 @@ type EddyClusterRender = {
 };
 
 const VIEW_MODE_DESCRIPTIONS: Record<Exclude<ViewMode, "eddies">, string> = {
-  horizontal: "Horizontal: view the selected variable on a constant-depth map slice.",
-  transect: "Zonal: view a west-east section along a selected latitude.",
-  draw: "Draw: click two points on the map to sample an arbitrary transect.",
-  class: "Class: show 3D point clouds for value bands through the water column.",
+  horizontal:
+    "Horizontal: view the selected variable on a constant-depth map slice. Select depth under Slice, define color scheme under Color scale.",
+  transect:
+    "Zonal: view the selected variable on a west-east section at a chosen latitude. Select latitude under Slice, define color scheme under Color scale.",
+  draw:
+    "Draw: sample the selected variable along an arbitrary line between two map points. Set depth and draw the line under Slice, define color scheme under Color scale.",
+  class:
+    "Class: show 3D point clouds for value bands through the water column. Set class range and density under Slice, define color scheme under Color scale.",
 };
 
 const PLAYBACK_SURFACE_MAX = 180;
