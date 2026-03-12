@@ -1,0 +1,9 @@
+{
+  "coordinates": "PHrefC drF iter rhoRef",
+  "_ARRAY_DIMENSIONS": [
+    "time",
+    "Z",
+    "lat",
+    "lon"
+  ]
+}
