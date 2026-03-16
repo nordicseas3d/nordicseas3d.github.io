@@ -166,6 +166,7 @@ type WindParticle = {
   speedMag: number;
   trailX: number[];
   trailY: number[];
+  trailMag: number[];
 };
 
 function makeColorbarConfig(opts: {
@@ -420,6 +421,57 @@ function projectPointWithCameraParamsRowMajor(
   const p0 = xformMatrixRowMajor(model, [x, y, z, 1]);
   const p1 = xformMatrixRowMajor(view, p0);
   return xformMatrixRowMajor(projection, p1);
+}
+
+function resolveSceneViewport(
+  graphDiv: any,
+  sceneObj: any,
+  fallbackWidth: number,
+  fallbackHeight: number
+) {
+  const graphRect = graphDiv?.getBoundingClientRect?.();
+  const domCandidates = [
+    sceneObj?.container,
+    sceneObj?.glplot?.container,
+    sceneObj?.glplot?.canvas,
+  ].filter(Boolean);
+
+  for (const node of domCandidates) {
+    const rect = node?.getBoundingClientRect?.();
+    if (!rect || !graphRect) continue;
+    const width = Number(rect.width);
+    const height = Number(rect.height);
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 1 || height <= 1) continue;
+    return {
+      left: rect.left - graphRect.left,
+      top: rect.top - graphRect.top,
+      width,
+      height,
+    };
+  }
+
+  const fullLayout = graphDiv?._fullLayout;
+  const sceneLayout = fullLayout?.scene;
+  const margin = fullLayout?.margin ?? {};
+  const l = Number(margin.l ?? 0);
+  const r = Number(margin.r ?? 0);
+  const t = Number(margin.t ?? 0);
+  const b = Number(margin.b ?? 0);
+  const plotWidth = Math.max(1, fallbackWidth - l - r);
+  const plotHeight = Math.max(1, fallbackHeight - t - b);
+  const domainX = Array.isArray(sceneLayout?.domain?.x) ? sceneLayout.domain.x : [0, 1];
+  const domainY = Array.isArray(sceneLayout?.domain?.y) ? sceneLayout.domain.y : [0, 1];
+  const x0 = Number(domainX[0] ?? 0);
+  const x1 = Number(domainX[1] ?? 1);
+  const y0 = Number(domainY[0] ?? 0);
+  const y1 = Number(domainY[1] ?? 1);
+
+  return {
+    left: l + Math.max(0, Math.min(1, x0)) * plotWidth,
+    top: t + (1 - Math.max(0, Math.min(1, y1))) * plotHeight,
+    width: Math.max(1, Math.abs(x1 - x0) * plotWidth),
+    height: Math.max(1, Math.abs(y1 - y0) * plotHeight),
+  };
 }
 
 function normalizeCamera(input: any): any | null {
@@ -823,14 +875,60 @@ export default function Basemap3D(props: {
     const lonEnd = Number(lon[nx - 1]);
     const latStart = Number(lat[0]);
     const latEnd = Number(lat[ny - 1]);
-    const lonMin = Math.min(lonStart, lonEnd);
-    const lonMax = Math.max(lonStart, lonEnd);
-    const latMin = Math.min(latStart, latEnd);
-    const latMax = Math.max(latStart, latEnd);
-    const lonSpan = Math.max(1e-9, lonMax - lonMin);
-    const latSpan = Math.max(1e-9, latMax - latMin);
     const lonAsc = lonEnd >= lonStart;
     const latAsc = latEnd >= latStart;
+
+    const edgeMinActiveCount = 8;
+    const rowActiveCounts = new Array(ny).fill(0);
+    const colActiveCounts = new Array(nx).fill(0);
+    let maxMag = 0;
+    for (let j = 0; j < ny; j++) {
+      const ur = u[j];
+      const vr = v[j];
+      if (!Array.isArray(ur) || !Array.isArray(vr)) continue;
+      for (let i = 0; i < nx; i++) {
+        const uu = Number(ur[i]);
+        const vv = Number(vr[i]);
+        if (!Number.isFinite(uu) || !Number.isFinite(vv)) continue;
+        const m = Math.hypot(uu, vv);
+        if (m > maxMag) maxMag = m;
+        if (m > 1e-8) {
+          rowActiveCounts[j] += 1;
+          colActiveCounts[i] += 1;
+        }
+      }
+    }
+
+    const firstActiveRow = rowActiveCounts.findIndex((count) => count >= edgeMinActiveCount);
+    const firstActiveCol = colActiveCounts.findIndex((count) => count >= edgeMinActiveCount);
+    const lastActiveRow = (() => {
+      for (let j = ny - 1; j >= 0; j--) {
+        if (rowActiveCounts[j] >= edgeMinActiveCount) return j;
+      }
+      return -1;
+    })();
+    const lastActiveCol = (() => {
+      for (let i = nx - 1; i >= 0; i--) {
+        if (colActiveCounts[i] >= edgeMinActiveCount) return i;
+      }
+      return -1;
+    })();
+    if (firstActiveRow < 0 || firstActiveCol < 0 || lastActiveRow < firstActiveRow || lastActiveCol < firstActiveCol) {
+      return;
+    }
+
+    const activeLonStart = Number(lon[firstActiveCol]);
+    const activeLonEnd = Number(lon[lastActiveCol]);
+    const activeLatStart = Number(lat[firstActiveRow]);
+    const activeLatEnd = Number(lat[lastActiveRow]);
+    const lonMin = Math.min(activeLonStart, activeLonEnd);
+    const lonMax = Math.max(activeLonStart, activeLonEnd);
+    const latMin = Math.min(activeLatStart, activeLatEnd);
+    const latMax = Math.max(activeLatStart, activeLatEnd);
+    const lonSpan = Math.max(1e-9, lonMax - lonMin);
+    const latSpan = Math.max(1e-9, latMax - latMin);
+    const activeNx = lastActiveCol - firstActiveCol + 1;
+    const activeNy = lastActiveRow - firstActiveRow + 1;
 
     const bathyLon = bathy.lon ?? [];
     const bathyLat = bathy.lat ?? [];
@@ -894,13 +992,13 @@ export default function Basemap3D(props: {
 
     const toLonCoord = (x: number) => {
       const t = (x - lonMin) / lonSpan;
-      const c = t * (nx - 1);
-      return lonAsc ? c : nx - 1 - c;
+      const c = t * (activeNx - 1);
+      return lonAsc ? firstActiveCol + c : lastActiveCol - c;
     };
     const toLatCoord = (y: number) => {
       const t = (y - latMin) / latSpan;
-      const c = t * (ny - 1);
-      return latAsc ? c : ny - 1 - c;
+      const c = t * (activeNy - 1);
+      return latAsc ? firstActiveRow + c : lastActiveRow - c;
     };
 
     const sample = (x: number, y: number) => {
@@ -937,45 +1035,58 @@ export default function Basemap3D(props: {
       if (sumW <= 1e-8) return null;
       return { uu: sumU / sumW, vv: sumV / sumW };
     };
-
-    let maxMag = 0;
-    for (let j = 0; j < ny; j++) {
-      const ur = u[j];
-      const vr = v[j];
-      if (!Array.isArray(ur) || !Array.isArray(vr)) continue;
-      for (let i = 0; i < nx; i++) {
-        const uu = Number(ur[i]);
-        const vv = Number(vr[i]);
-        if (!Number.isFinite(uu) || !Number.isFinite(vv)) continue;
-        const m = Math.hypot(uu, vv);
-        if (m > maxMag) maxMag = m;
-      }
-    }
     const targetDegPerSec = 1.8 * Math.max(0.1, Number(layer.speed ?? 1));
     const advectScale = maxMag > 1e-6 ? Math.min(120, targetDegPerSec / maxMag) : 0;
-    const nParticles = Math.max(96, Math.min(1200, Math.round(Number(layer.particleCount ?? 520))));
-    const trailLen = Math.max(10, Math.min(36, Math.round((layer.size ?? 1.4) * 10)));
-    const lineWidth = Math.max(0.8, Number(layer.size ?? 1.7) * 0.95);
+    const nParticles = Math.max(96, Math.min(2600, Math.round(Number(layer.particleCount ?? 1200))));
+    const trailLen = Math.max(14, Math.min(42, Math.round((layer.size ?? 1.4) * 13)));
+    const lineWidth = Math.max(0.9, Number(layer.size ?? 1.7) * 0.92);
+    const headRadius = Math.max(1.3, lineWidth * 0.9);
     const lineColor = layer.color ?? WIND_TRACE_COLOR_DEFAULT;
     const zVal = scaleZ(layer.zPlane ?? 6);
-
-    const spawn = (): WindParticle => {
-      for (let k = 0; k < 60; k++) {
+    const colorForMag = () => lineColor;
+    const makeParticleAt = (x: number, y: number): WindParticle | null => {
+      if (!isOcean(x, y)) return null;
+      const w = sample(x, y);
+      if (!w) return null;
+      const speedMag = Math.hypot(w.uu, w.vv);
+      if (speedMag <= 1e-8) return null;
+      return { x, y, ttl: 2 + Math.random() * 6, speedMag, trailX: [x], trailY: [y], trailMag: [speedMag] };
+    };
+    const spawnRandom = (): WindParticle => {
+      for (let k = 0; k < 80; k++) {
         const x = lonMin + Math.random() * lonSpan;
         const y = latMin + Math.random() * latSpan;
-        if (!isOcean(x, y)) continue;
-        const w = sample(x, y);
-        if (!w) continue;
-        const speedMag = Math.hypot(w.uu, w.vv);
-        if (speedMag <= 1e-8) continue;
-        return { x, y, ttl: 2 + Math.random() * 6, speedMag, trailX: [x], trailY: [y] };
+        const particle = makeParticleAt(x, y);
+        if (particle) return particle;
       }
       const x = (lonMin + lonMax) * 0.5;
       const y = (latMin + latMax) * 0.5;
-      return { x, y, ttl: 2 + Math.random() * 6, speedMag: 0, trailX: [x], trailY: [y] };
+      return { x, y, ttl: 2 + Math.random() * 6, speedMag: 0, trailX: [x], trailY: [y], trailMag: [0] };
     };
+    const spawnSeeded = (index: number): WindParticle => {
+      const aspect = Math.max(0.35, Math.min(4, lonSpan / Math.max(1e-9, latSpan)));
+      const cols = Math.max(1, Math.round(Math.sqrt(nParticles * aspect)));
+      const rows = Math.max(1, Math.ceil(nParticles / cols));
+      const col = index % cols;
+      const row = Math.floor(index / cols) % rows;
+      const jitterX = ((index * 0.61803398875) % 1) - 0.5;
+      const jitterY = ((index * 0.41421356237) % 1) - 0.5;
+      const baseX = lonMin + ((col + 0.5 + jitterX * 0.7) / cols) * lonSpan;
+      const baseY = latMin + ((row + 0.5 + jitterY * 0.7) / rows) * latSpan;
+      const dx = lonSpan / Math.max(1, cols);
+      const dy = latSpan / Math.max(1, rows);
+      for (let k = 0; k < 10; k++) {
+        const x = baseX + (Math.random() - 0.5) * dx * 0.9;
+        const y = baseY + (Math.random() - 0.5) * dy * 0.9;
+        const particle = makeParticleAt(x, y);
+        if (particle) return particle;
+      }
+      return spawnRandom();
+    };
+    const spawn = (seedIndex?: number): WindParticle =>
+      Number.isFinite(seedIndex) ? spawnSeeded(Number(seedIndex)) : spawnRandom();
 
-    const particles = Array.from({ length: nParticles }, () => spawn());
+    const particles = Array.from({ length: nParticles }, (_, idx) => spawn(idx));
     windParticlesRef.current = particles;
 
     const draw = () => {
@@ -999,9 +1110,7 @@ export default function Basemap3D(props: {
       if (!ctx) return;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, cssW, cssH);
-      ctx.beginPath();
-      ctx.lineWidth = lineWidth;
-      ctx.strokeStyle = lineColor;
+      const sceneViewport = resolveSceneViewport(graphDiv, sceneObj, cssW, cssH);
       ctx.lineCap = "round";
       ctx.lineJoin = "round";
       const ds0 =
@@ -1069,38 +1178,71 @@ export default function Basemap3D(props: {
         if (!Number.isFinite(xn) || !Number.isFinite(yn)) return null;
         if (Math.abs(xn) > 1.12 || Math.abs(yn) > 1.12) return null;
         return {
-          sx: (0.5 + 0.5 * xn) * cssW,
-          sy: (0.5 - 0.5 * yn) * cssH,
+          sx: sceneViewport.left + (0.5 + 0.5 * xn) * sceneViewport.width,
+          sy: sceneViewport.top + (0.5 - 0.5 * yn) * sceneViewport.height,
         };
+      };
+      const drawSegment = (
+        x0: number,
+        y0: number,
+        x1: number,
+        y1: number,
+        mag: number,
+        ageT: number
+      ) => {
+        ctx.strokeStyle = colorForMag(mag);
+        ctx.globalAlpha = 0.12 + 0.72 * ageT * ageT;
+        ctx.lineWidth = lineWidth * (0.58 + 0.62 * ageT);
+        ctx.beginPath();
+        ctx.moveTo(x0, y0);
+        ctx.lineTo(x1, y1);
+        ctx.stroke();
+      };
+      const drawHead = (x: number, y: number, mag: number) => {
+        ctx.fillStyle = colorForMag(mag);
+        ctx.globalAlpha = 0.95;
+        ctx.beginPath();
+        ctx.arc(x, y, headRadius, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = "rgba(255,255,255,0.95)";
+        ctx.globalAlpha = 0.5;
+        ctx.beginPath();
+        ctx.arc(x, y, headRadius * 0.42, 0, Math.PI * 2);
+        ctx.fill();
       };
 
       let drewProjected = false;
       for (const p of particles) {
-        if (p.trailX.length < 2) continue;
-        let penDown = false;
+        let prev: { sx: number; sy: number; mag: number } | null = null;
+        let head: { sx: number; sy: number; mag: number } | null = null;
         for (let k = 0; k < p.trailX.length; k++) {
           const px = p.trailX[k];
           const py = p.trailY[k];
           if (!isOcean(px, py)) {
-            penDown = false;
+            prev = null;
             continue;
           }
           const projected = projectToScreen(px, py, zVal);
           if (!projected) {
-            penDown = false;
+            prev = null;
             continue;
           }
-          if (!penDown) {
-            ctx.moveTo(projected.sx, projected.sy);
-            penDown = true;
-          } else {
-            ctx.lineTo(projected.sx, projected.sy);
+          const mag = Number(p.trailMag[k] ?? p.speedMag);
+          if (prev) {
+            const ageT = p.trailX.length > 1 ? k / (p.trailX.length - 1) : 1;
+            drawSegment(prev.sx, prev.sy, projected.sx, projected.sy, Math.max(prev.mag, mag), ageT);
             drewProjected = true;
           }
+          prev = { sx: projected.sx, sy: projected.sy, mag };
+          head = prev;
+        }
+        if (head) {
+          drawHead(head.sx, head.sy, head.mag);
+          drewProjected = true;
         }
       }
+      ctx.globalAlpha = 1;
       if (drewProjected) {
-        ctx.stroke();
         return;
       }
       if (bestProjector) {
@@ -1110,32 +1252,37 @@ export default function Basemap3D(props: {
       }
 
       // Fallback: keep particles visible even if projection internals are unavailable.
-      ctx.beginPath();
       for (const p of particles) {
-        if (p.trailX.length < 2) continue;
-        let penDown = false;
+        let prev: { sx: number; sy: number; mag: number } | null = null;
+        let head: { sx: number; sy: number; mag: number } | null = null;
         for (let k = 0; k < p.trailX.length; k++) {
           const x = p.trailX[k];
           const y = p.trailY[k];
           if (!isOcean(x, y)) {
-            penDown = false;
+            prev = null;
             continue;
           }
           const sx = ((x - lonMin) / lonSpan) * cssW;
           const sy = (1 - (y - latMin) / latSpan) * cssH;
           if (!Number.isFinite(sx) || !Number.isFinite(sy)) {
-            penDown = false;
+            prev = null;
             continue;
           }
-          if (!penDown) {
-            ctx.moveTo(sx, sy);
-            penDown = true;
-          } else {
-            ctx.lineTo(sx, sy);
+          const mappedX = sceneViewport.left + (sx / cssW) * sceneViewport.width;
+          const mappedY = sceneViewport.top + (sy / cssH) * sceneViewport.height;
+          const mag = Number(p.trailMag[k] ?? p.speedMag);
+          if (prev) {
+            const ageT = p.trailX.length > 1 ? k / (p.trailX.length - 1) : 1;
+            drawSegment(prev.sx, prev.sy, mappedX, mappedY, Math.max(prev.mag, mag), ageT);
           }
+          prev = { sx: mappedX, sy: mappedY, mag };
+          head = prev;
+        }
+        if (head) {
+          drawHead(head.sx, head.sy, head.mag);
         }
       }
-      ctx.stroke();
+      ctx.globalAlpha = 1;
     };
 
     draw();
@@ -1170,10 +1317,12 @@ export default function Basemap3D(props: {
         }
         p.trailX.push(p.x);
         p.trailY.push(p.y);
+        p.trailMag.push(p.speedMag);
         if (p.trailX.length > trailLen) {
           const drop = p.trailX.length - trailLen;
           p.trailX.splice(0, drop);
           p.trailY.splice(0, drop);
+          p.trailMag.splice(0, drop);
         }
         if (p.x < lonMin || p.x > lonMax || p.y < latMin || p.y > latMax) {
           particles[idx] = spawn();

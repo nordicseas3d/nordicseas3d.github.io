@@ -140,6 +140,7 @@ const CLASS_DENSITY_MIN = 0.35;
 const CLASS_DENSITY_MAX = 1.6;
 const CLASS_DENSITY_STEP = 0.05;
 const CLASS_DENSITY_STORAGE_KEY = "gs_class_density_v1";
+const TRANSECT_SLICE_STEP_DEG = 0.2;
 const EDDY_POINTS_PER_CLUSTER_PLAYING = 180;
 const EDDY_POINTS_PER_CLUSTER_PAUSED = 320;
 const EDDY_LAYER_OFFSET_M = 8;
@@ -451,8 +452,6 @@ const SURFACE_FIELD_HEIGHT_M = 18;
 const SEA_ICE_HEIGHT_M = 65;
 const SEA_ICE_OPACITY = 0.55;
 const MOBILE_PANEL_BREAKPOINT_PX = 820;
-const WIND_FEATURE_AVAILABLE = false;
-
 function panelOpenStorageKey(isMobile: boolean) {
   return isMobile ? "gs_panel_open_mobile" : "gs_panel_open_desktop";
 }
@@ -923,6 +922,76 @@ function ToggleSwitch(props: {
   );
 }
 
+function rangeStepPrecision(step: number) {
+  if (!Number.isFinite(step) || step <= 0) return 0;
+  const text = String(step).toLowerCase();
+  const expIdx = text.indexOf("e-");
+  if (expIdx >= 0) return Number(text.slice(expIdx + 2));
+  const dotIdx = text.indexOf(".");
+  return dotIdx >= 0 ? text.length - dotIdx - 1 : 0;
+}
+
+function nudgeRangeValue(value: number, direction: 1 | -1, min: number, max: number, step: number) {
+  const safeStep = Number.isFinite(step) && step > 0 ? step : 1;
+  const precision = Math.min(6, rangeStepPrecision(safeStep));
+  const next = clamp(value + direction * safeStep, min, max);
+  return Number(next.toFixed(precision));
+}
+
+function RangeNudgeSlider(props: {
+  min: number;
+  max: number;
+  step?: number;
+  value: number;
+  onChange: (next: number) => void;
+  disabled?: boolean;
+}) {
+  const { min, max, step = 1, value, onChange, disabled } = props;
+  const safeStep = Number.isFinite(step) && step > 0 ? step : 1;
+  const epsilon = safeStep * 0.25;
+  const canDecrease = !disabled && value > min + epsilon;
+  const canIncrease = !disabled && value < max - epsilon;
+
+  return (
+    <div style={{ display: "flex", alignItems: "stretch", gap: 8 }}>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={safeStep}
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+        style={{ width: "100%", flex: 1 }}
+        disabled={disabled}
+      />
+      <div style={{ display: "flex", flexDirection: "column", gap: 4, flex: "0 0 auto" }}>
+        <button
+          type="button"
+          className="tab"
+          style={{ minWidth: 28, padding: "2px 8px", lineHeight: 1, fontWeight: 700 }}
+          disabled={!canIncrease}
+          onClick={() => onChange(nudgeRangeValue(value, 1, min, max, safeStep))}
+          aria-label="Increase slider value"
+          title="Increase"
+        >
+          ^
+        </button>
+        <button
+          type="button"
+          className="tab"
+          style={{ minWidth: 28, padding: "2px 8px", lineHeight: 1, fontWeight: 700 }}
+          disabled={!canDecrease}
+          onClick={() => onChange(nudgeRangeValue(value, -1, min, max, safeStep))}
+          aria-label="Decrease slider value"
+          title="Decrease"
+        >
+          v
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const panelRef = useRef<HTMLDivElement | null>(null);
   const [cameraResetNonce, setCameraResetNonce] = useState(0);
@@ -1067,7 +1136,7 @@ export default function App() {
   });
   const [eddyTrackLength, setEddyTrackLength] = useState(EDDY_TRACK_HISTORY_DEFAULT);
   const [eddyMinCells, setEddyMinCells] = useState(EDDY_MIN_CELLS_DEFAULT);
-  const [showSeaIce, setShowSeaIce] = useState(true);
+  const [showSeaIce, setShowSeaIce] = useState(false);
   const [showGsrMask, setShowGsrMask] = useState<boolean>(() => {
     try {
       if (typeof window === "undefined") return false;
@@ -2405,6 +2474,14 @@ export default function App() {
     seaIcePlane,
   ]);
 
+  const windParticleCount = useMemo(() => {
+    const area = Math.max(1, viewportWidth * viewportHeight);
+    const referenceArea = 1280 * 720;
+    const baseCount = playing ? 900 : 1350;
+    const scaled = Math.round((baseCount * area) / referenceArea);
+    return clamp(scaled, playing ? 700 : 950, playing ? 1800 : 2400);
+  }, [playing, viewportHeight, viewportWidth]);
+
   const windLayer = useMemo(() => {
     if (!meta || !projectOn3d || !showWind || !windRender) return undefined;
     return {
@@ -2414,12 +2491,12 @@ export default function App() {
       u: windRender.u,
       v: windRender.v,
       zPlane: SEA_ICE_HEIGHT_M + 12,
-      particleCount: playing ? 180 : 320,
+      particleCount: windParticleCount,
       speed: 2.6,
       color: "rgba(255,255,255,0.90)",
       size: playing ? 1.1 : 1.35,
     };
-  }, [meta, projectOn3d, showWind, windRender, playing]);
+  }, [meta, projectOn3d, showWind, windParticleCount, windRender, playing]);
 
   const classLayer = useMemo(() => {
     if (!meta || !projectOn3d || viewMode !== "class" || !classTraces?.length) return undefined;
@@ -2776,6 +2853,10 @@ export default function App() {
                     <ToggleSwitch checked={showBathyContours} onCheckedChange={setShowBathyContours} />
                   </div>
                   <div className="toggleRow">
+                    <div>Wind stress on ocean</div>
+                    <ToggleSwitch checked={showWind} onCheckedChange={setShowWind} />
+                  </div>
+                  <div className="toggleRow">
                     <div>Sea ice</div>
                     <ToggleSwitch checked={showSeaIce} onCheckedChange={setShowSeaIce} />
                   </div>
@@ -2814,12 +2895,6 @@ export default function App() {
                     >
                       Show all basins
                     </button>
-                  ) : null}
-                  {WIND_FEATURE_AVAILABLE ? (
-                    <div className="toggleRow">
-                      <div>Wind stress on ocean</div>
-                      <ToggleSwitch checked={showWind} onCheckedChange={setShowWind} />
-                    </div>
                   ) : null}
                   <div className="toggleRow">
                     <div>Movie</div>
@@ -2876,13 +2951,11 @@ export default function App() {
                     <>
                       <label>
                         Depth ({activeDepthLabel})
-                        <input
-                          type="range"
+                        <RangeNudgeSlider
                           min={0}
                           max={Math.max(0, zList.length - 1)}
                           value={safeDepthIdx}
-                          onChange={(e) => setDepthIdx(Number(e.target.value))}
-                          style={{ width: "100%" }}
+                          onChange={setDepthIdx}
                           disabled={metaStatus !== "ready" || !zList.length}
                         />
                         {zList.length ? (
@@ -2976,27 +3049,23 @@ export default function App() {
                       </label>
                       <label>
                         Track length (frames) ({eddyTrackHistory})
-                        <input
-                          type="range"
+                        <RangeNudgeSlider
                           min={1}
                           max={eddyTrackHistoryMax}
                           step={1}
                           value={Math.min(eddyTrackHistory, eddyTrackHistoryMax)}
-                          onChange={(e) => setEddyTrackLength(Number(e.target.value))}
-                          style={{ width: "100%" }}
+                          onChange={setEddyTrackLength}
                           disabled={metaStatus !== "ready" || !timeList.length}
                         />
                       </label>
                       <label>
                         Minimum eddy size (cells) ({eddyMinCellCount})
-                        <input
-                          type="range"
+                        <RangeNudgeSlider
                           min={6}
                           max={120}
                           step={2}
                           value={eddyMinCellCount}
-                          onChange={(e) => setEddyMinCells(Number(e.target.value))}
-                          style={{ width: "100%" }}
+                          onChange={setEddyMinCells}
                         />
                         <div className="hint">Removes tiny noisy features.</div>
                       </label>
@@ -3014,14 +3083,12 @@ export default function App() {
                   ) : viewMode === "transect" ? (
                     <label>
                       Latitude target (°N) ({latTarget.toFixed(2)}°N)
-                      <input
-                        type="range"
+                      <RangeNudgeSlider
                         min={latMin}
                         max={latMax}
-                        step={0.01}
+                        step={TRANSECT_SLICE_STEP_DEG}
                         value={latTarget}
-                        onChange={(e) => setLatTarget(Number(e.target.value))}
-                        style={{ width: "100%" }}
+                        onChange={setLatTarget}
                         disabled={metaStatus !== "ready"}
                       />
                       <div
@@ -3042,7 +3109,7 @@ export default function App() {
                           value={latTargetInput}
                           min={latMin}
                           max={latMax}
-                          step={0.05}
+                          step={TRANSECT_SLICE_STEP_DEG}
                           onChange={(e) => setLatTargetInput(e.target.value)}
                           onBlur={commitLatTargetInput}
                           onKeyDown={(e) => {
@@ -3127,14 +3194,12 @@ export default function App() {
                       </label>
                       <label>
                         Class density ({clampClassDensity(classDensity).toFixed(2)}x)
-                        <input
-                          type="range"
+                        <RangeNudgeSlider
                           min={CLASS_DENSITY_MIN}
                           max={CLASS_DENSITY_MAX}
                           step={CLASS_DENSITY_STEP}
                           value={clampClassDensity(classDensity)}
-                          onChange={(e) => setClassDensity(clampClassDensity(Number(e.target.value)))}
-                          style={{ width: "100%" }}
+                          onChange={(next) => setClassDensity(clampClassDensity(next))}
                         />
                         <div className="hint">Lower is faster/sparser; higher is denser/slower.</div>
                       </label>
@@ -3163,14 +3228,12 @@ export default function App() {
 
                   <label>
                     Depth ratio (z) ({depthRatio.toFixed(2)})
-                    <input
-                      type="range"
+                    <RangeNudgeSlider
                       min={0.15}
                       max={1.5}
                       step={0.05}
                       value={depthRatio}
-                      onChange={(e) => setDepthRatio(Number(e.target.value))}
-                      style={{ width: "100%" }}
+                      onChange={setDepthRatio}
                     />
                     <div className="hint">Vertical exaggeration.</div>
                   </label>
@@ -3187,27 +3250,23 @@ export default function App() {
                     <>
                       <label>
                         Focus depth (m) ({Math.round(depthFocusM)} m)
-                        <input
-                          type="range"
+                        <RangeNudgeSlider
                           min={500}
                           max={6000}
                           step={100}
                           value={depthFocusM}
-                          onChange={(e) => setDepthFocusM(Number(e.target.value))}
-                          style={{ width: "100%" }}
+                          onChange={setDepthFocusM}
                         />
                         <div className="hint">Upper layer stays linear; deeper layers are compressed.</div>
                       </label>
                       <label>
                         Deep ratio ({deepRatio.toFixed(2)})
-                        <input
-                          type="range"
+                        <RangeNudgeSlider
                           min={0.05}
                           max={1}
                           step={0.05}
                           value={deepRatio}
-                          onChange={(e) => setDeepRatio(Number(e.target.value))}
-                          style={{ width: "100%" }}
+                          onChange={setDeepRatio}
                         />
                         <div className="hint">Lower compresses deep ocean (below focus depth).</div>
                       </label>
@@ -3439,12 +3498,10 @@ export default function App() {
                     </b>
                   </div>
 
-                  {WIND_FEATURE_AVAILABLE ? (
-                    <div className="hint">
-                      Wind stress on ocean: <b>{showWind ? windStatus : "off"}</b>
-                      {windStatus === "failed" && windError ? <div style={{ marginTop: 6 }}>Error: {windError}</div> : null}
-                    </div>
-                  ) : null}
+                  <div className="hint">
+                    Wind stress on ocean: <b>{showWind ? windStatus : "off"}</b>
+                    {windStatus === "failed" && windError ? <div style={{ marginTop: 6 }}>Error: {windError}</div> : null}
+                  </div>
 
                   <div className="hint">
                     3D: Plotly <b>{bathyInfo.plotly}</b>, bathymetry <b>{bathyInfo.bathy}</b>.
