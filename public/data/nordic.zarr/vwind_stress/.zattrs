@@ -1,0 +1,8 @@
+{
+  "coordinates": "iter",
+  "_ARRAY_DIMENSIONS": [
+    "time",
+    "lat",
+    "lon"
+  ]
+}
