@@ -39,8 +39,13 @@ async function fetchJson<T>(url: string): Promise<T> {
   return parsePossiblyNonStandardJson<T>(await response.text());
 }
 
+function toAbsoluteUrl(url: string) {
+  if (typeof window === "undefined") return url;
+  return new URL(url, window.location.href).toString();
+}
+
 function resolveRelativeUrl(baseUrl: string, relativePath: string) {
-  return new URL(relativePath, baseUrl).toString();
+  return new URL(relativePath, toAbsoluteUrl(baseUrl)).toString();
 }
 
 async function loadBathyGridFromUrl(url: string): Promise<BathyGrid | null> {
