@@ -4,6 +4,7 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { withBase } from "../lib/paths";
 import { makeSyntheticGreenlandSeaBathy } from "../lib/syntheticBathy";
 import { bathyCandidates, loadBathyGridFromCandidates, type BathyGrid as SharedBathyGrid } from "../lib/bathyJson";
+import { formatColorbarTick, formatColorbarTickText } from "../lib/colorbar";
 import type { RGB } from "../lib/colormap";
 
 type BathyGrid = SharedBathyGrid;
@@ -22,6 +23,7 @@ type HorizontalField = {
   showScale?: boolean;
   colorbarTitle?: string;
   colorbarTicks?: number[];
+  colorbarTickText?: string[];
   colorbarLen?: number;
   colorbarX?: number;
   colorbarY?: number;
@@ -82,6 +84,7 @@ type ColorbarViewModel = {
   min: number;
   max: number;
   ticks: number[];
+  tickText?: string[];
   len: number;
 };
 
@@ -283,27 +286,6 @@ function nearestIndexSorted(values: number[], target: number) {
     else hi = mid;
   }
   return target - values[lo] <= values[hi] - target ? lo : hi;
-}
-
-function trimFormattedTick(text: string) {
-  return text.replace(/\.0+$/, "").replace(/(\.\d*[1-9])0+$/, "$1").replace(/\.$/, "");
-}
-
-function formatColorbarTick(value: number, title?: string) {
-  if (!Number.isFinite(value)) return "";
-  const label = (title ?? "").toLowerCase();
-  if (label.includes("salinity")) {
-    return trimFormattedTick(value.toFixed(1));
-  }
-  if (label.includes("topograph") || label.includes("bed elevation")) {
-    return trimFormattedTick(value.toFixed(0));
-  }
-  if (label.includes("sea ice")) {
-    return trimFormattedTick(value.toFixed(Math.abs(value) >= 1 ? 1 : 2));
-  }
-  const abs = Math.abs(value);
-  const digits = abs >= 1000 ? 0 : abs >= 100 ? 1 : abs >= 10 ? 1 : 2;
-  return trimFormattedTick(value.toFixed(digits));
 }
 
 function makeBathymetryTicks(min: number, max: number) {
@@ -1127,6 +1109,9 @@ export default function BasemapThree(props: {
         min: field.cmin,
         max: field.cmax,
         ticks,
+        tickText: field.colorbarTickText?.length
+          ? field.colorbarTickText
+          : formatColorbarTickText(ticks, field.colorbarTitle ?? "Value"),
         len: clamp(Number(field.colorbarLen ?? 0.62), 0.25, 0.95),
       });
     }
@@ -1153,6 +1138,9 @@ export default function BasemapThree(props: {
         min: plane.cmin,
         max: plane.cmax,
         ticks,
+        tickText: plane.colorbarTickText?.length
+          ? plane.colorbarTickText
+          : formatColorbarTickText(ticks, plane.colorbarTitle ?? "Value"),
         len: clamp(Number(plane.colorbarLen ?? 0.62), 0.25, 0.95),
       });
     }
@@ -1560,7 +1548,7 @@ export default function BasemapThree(props: {
             }}
           />
           <div style={{ position: "relative", height: 18, marginTop: 4 }}>
-            {bar.ticks.map((tick) => {
+            {bar.ticks.map((tick, tickIndex) => {
               const t = clamp((tick - bar.min) / Math.max(1e-9, bar.max - bar.min), 0, 1);
               return (
                 <div
@@ -1571,14 +1559,14 @@ export default function BasemapThree(props: {
                     top: 0,
                     width: 32,
                     textAlign: "center",
-                    fontSize: 10,
-                    lineHeight: 1.1,
-                    color: "rgba(255,255,255,0.86)",
-                    textShadow: "0 1px 2px rgba(0,0,0,0.7)",
-                    whiteSpace: "nowrap",
-                  }}
+                  fontSize: 10,
+                  lineHeight: 1.1,
+                  color: "rgba(255,255,255,0.86)",
+                  textShadow: "0 1px 2px rgba(0,0,0,0.7)",
+                  whiteSpace: "nowrap",
+                }}
                 >
-                  {formatColorbarTick(tick, bar.title)}
+                  {bar.tickText?.[tickIndex] ?? formatColorbarTick(tick, bar.title)}
                 </div>
               );
             })}
@@ -1635,7 +1623,7 @@ export default function BasemapThree(props: {
             }}
           />
           <div style={{ position: "relative", height: 18, marginTop: 4 }}>
-            {bathyColorbar.ticks.map((tick) => {
+            {bathyColorbar.ticks.map((tick, tickIndex) => {
               const t = clamp((tick - bathyColorbar.min) / Math.max(1e-9, bathyColorbar.max - bathyColorbar.min), 0, 1);
               return (
                 <div

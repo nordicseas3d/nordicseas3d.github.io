@@ -16,6 +16,7 @@ import {
   type CmoceanColormapId,
   type RGB,
 } from "./lib/colormap";
+import { formatColorbarTickText } from "./lib/colorbar";
 import {
   loadGsZarrMeta,
   load3DFieldAtTime,
@@ -2669,6 +2670,7 @@ export default function App() {
     if (!scalarFieldVisible) return undefined;
     if (drawTransectComplete) return undefined;
     const dataColorbarTitle = varId === "T" ? "Modeled Temperature (°C)" : range.title;
+    const dataColorbarTickText = colorbarTicks ? formatColorbarTickText(colorbarTicks, dataColorbarTitle) : undefined;
     return {
       enabled: true,
       values: horizontalRender.values,
@@ -2683,6 +2685,7 @@ export default function App() {
       showScale: showHorizontalColorbar,
       colorbarTitle: dataColorbarTitle,
       colorbarTicks,
+      colorbarTickText: dataColorbarTickText,
       colorbarLen: mainColorbarLayout.len,
       colorbarX: mainColorbarLayout.x,
       colorbarY: mainColorbarLayout.y,
@@ -2721,6 +2724,9 @@ export default function App() {
         ? makeTicks(drawTransectAutoRange.min, drawTransectAutoRange.max, settings.tickCount)
         : colorbarTicks;
     const dataColorbarTitle = varId === "T" ? "Modeled Temperature (°C)" : range.title;
+    const dataColorbarTickText = transectColorbarTicks
+      ? formatColorbarTickText(transectColorbarTicks, dataColorbarTitle)
+      : undefined;
     return {
       enabled: true,
       lat: transectRender.lat,
@@ -2735,6 +2741,7 @@ export default function App() {
       showScale: showColorbarActive,
       colorbarTitle: dataColorbarTitle,
       colorbarTicks: transectColorbarTicks,
+      colorbarTickText: dataColorbarTickText,
       colorbarLen: mainColorbarLayout.len,
       colorbarX: mainColorbarLayout.x,
       colorbarY: mainColorbarLayout.y,
@@ -2771,6 +2778,7 @@ export default function App() {
       })
     );
     const cmin = Math.max(0, Math.min(0.99, SEA_ICE_THRESHOLD));
+    const seaIceTicks = [cmin, 0.5, 0.75, 1].filter((v, i, arr) => arr.indexOf(v) === i);
     return {
       enabled: true,
       values: masked,
@@ -2783,7 +2791,8 @@ export default function App() {
       mode: "surface" as const,
       zPlane: SEA_ICE_HEIGHT_M,
       showScale: showColorbarActive,
-      colorbarTicks: [cmin, 0.5, 0.75, 1].filter((v, i, arr) => arr.indexOf(v) === i),
+      colorbarTicks: seaIceTicks,
+      colorbarTickText: formatColorbarTickText(seaIceTicks, "Sea ice concentration"),
       colorbarLen: seaIceColorbarLayout.len,
       colorbarX: seaIceColorbarLayout.x,
       colorbarY: seaIceColorbarLayout.y,

@@ -3,6 +3,7 @@ import type { Layout, PlotData } from "plotly.js";
 import { withBase } from "../lib/paths";
 import { makeSyntheticGreenlandSeaBathy } from "../lib/syntheticBathy";
 import { bathyCandidates, loadBathyGridFromCandidates } from "../lib/bathyJson";
+import { formatColorbarTickText } from "../lib/colorbar";
 import {
   deep_256,
   paletteToColorscale,
@@ -56,6 +57,7 @@ type HorizontalField = {
   showScale?: boolean;
   colorbarTitle?: string;
   colorbarTicks?: number[];
+  colorbarTickText?: string[];
   colorbarLen?: number;
   colorbarX?: number;
   colorbarY?: number;
@@ -81,6 +83,7 @@ type TransectField = {
   showScale?: boolean;
   colorbarTitle?: string;
   colorbarTicks?: number[];
+  colorbarTickText?: string[];
   colorbarLen?: number;
   colorbarX?: number;
   colorbarY?: number;
@@ -177,13 +180,11 @@ function makeColorbarConfig(opts: {
   tickvals?: number[];
   ticktext?: string[];
 }) {
-  const titleLower = opts.title.toLowerCase();
-  const tickformat = titleLower.includes("salinity")
-    ? ".1~f"
-    : titleLower.includes("topograph") || titleLower.includes("bed elevation")
-      ? ".0f"
-      : titleLower.includes("sea ice")
-        ? ".2~f"
+  const ticktext =
+    opts.ticktext?.length && opts.tickvals?.length === opts.ticktext.length
+      ? opts.ticktext
+      : opts.tickvals?.length
+        ? formatColorbarTickText(opts.tickvals, opts.title)
         : undefined;
   return {
     title: {
@@ -192,8 +193,7 @@ function makeColorbarConfig(opts: {
       font: { size: 14 },
     },
     ...(opts.tickvals ? { tickmode: "array", tickvals: opts.tickvals } : null),
-    ...(opts.ticktext?.length ? { ticktext: opts.ticktext } : null),
-    ...(tickformat ? { tickformat } : null),
+    ...(ticktext?.length ? { ticktext } : null),
     ticks: "outside",
     tickfont: { size: 12 },
     thickness: 20,
@@ -1590,6 +1590,9 @@ export default function Basemap3D(props: {
     const overlayColorbarTicks =
       numericH?.colorbarTicks ??
       (props.horizontalOverlay?.showScale ? [-1, 0, 1, 2, 3, 4, 5] : undefined);
+    const overlayColorbarTickText =
+      numericH?.colorbarTickText ??
+      (overlayColorbarTicks ? formatColorbarTickText(overlayColorbarTicks, overlayColorbarTitle) : undefined);
     const overlayColorbarLen = numericH?.colorbarLen;
     const overlayColorbarX = numericH?.colorbarX;
     const overlayColorbarY = numericH?.colorbarY;
@@ -1646,6 +1649,7 @@ export default function Basemap3D(props: {
                 ...makeColorbarConfig({
                   title: overlayColorbarTitle,
                   tickvals: overlayColorbarTicks,
+                  ticktext: overlayColorbarTickText,
                   len: overlayColorbarLen,
                   x: overlayColorbarX,
                   y: overlayColorbarY,
@@ -2089,6 +2093,7 @@ export default function Basemap3D(props: {
                 ...makeColorbarConfig({
                   title: p.colorbarTitle ?? "Value",
                   tickvals: p.colorbarTicks,
+                  ticktext: p.colorbarTickText,
                   len: p.colorbarLen,
                   x: p.colorbarX,
                   y: p.colorbarY,
@@ -2388,6 +2393,7 @@ export default function Basemap3D(props: {
                 ...makeColorbarConfig({
                   title: numericT.colorbarTitle ?? "Value",
                   tickvals: numericT.colorbarTicks,
+                  ticktext: numericT.colorbarTickText,
                   len: numericT.colorbarLen,
                   x: numericT.colorbarX,
                   y: numericT.colorbarY,
