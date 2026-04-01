@@ -1,18 +1,19 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, useTransition } from "react";
 import Basemap3D from "./components/Basemap3D";
+import BasemapThree from "./components/BasemapThree";
 import {
-  balance_256,
+  CMOCEAN_COLORMAP_IDS,
+  bed_elevation_256,
   blues_r_256,
-  deep_256,
+  cmocean_256,
   grayscale_256,
-  haline_256,
   ice_256,
+  isCmoceanColormapId,
   paletteToColorscale,
   plasma_256,
   rdylbu_r_256,
-  thermal_256,
-  topo_256,
   viridis_256,
+  type CmoceanColormapId,
   type RGB,
 } from "./lib/colormap";
 import {
@@ -33,10 +34,14 @@ import {
 } from "./lib/eddies";
 
 type ViewMode = "horizontal" | "transect" | "draw" | "class" | "eddies";
+type Renderer3D = "plotly" | "three";
+type PanelResizeCorner = "nw" | "ne" | "sw" | "se";
 type VarId = "T" | "S";
 type ColorscaleMode = "continuous" | "discrete";
-type FieldColormapId = "thermal" | "haline" | "balance" | "rdylbu_r" | "viridis" | "plasma";
-type BathyColormapId = "deep" | "topo" | "blues_r" | "viridis" | "haline" | "grayscale";
+type ExtraFieldColormapId = "rdylbu_r" | "viridis" | "plasma";
+type FieldColormapId = CmoceanColormapId | ExtraFieldColormapId;
+type BathySourceId = "model" | "rtopo";
+type BathyColormapId = CmoceanColormapId | "bed_elevation" | "blues_r" | "viridis" | "grayscale";
 
 type VarColorSettings = {
   cmin: number;
@@ -113,13 +118,13 @@ type EddyClusterRender = {
 
 const VIEW_MODE_DESCRIPTIONS: Record<Exclude<ViewMode, "eddies">, string> = {
   horizontal:
-    "Horizontal: view the selected variable on a constant-depth map slice. Select depth under Slice, define color scheme under Color scale.",
+    "Horizontal: view the selected variable on a constant-depth map slice. Select depth under Tempo-spatial, define color scheme under Color scale.",
   transect:
-    "Zonal: view the selected variable on a west-east section at a chosen latitude. Select latitude under Slice, define color scheme under Color scale.",
+    "Zonal: view the selected variable on a west-east section at a chosen latitude. Select latitude under Tempo-spatial, define color scheme under Color scale.",
   draw:
-    "Draw: sample the selected variable along an arbitrary line between two map points. Set depth and draw the line under Slice, define color scheme under Color scale.",
+    "Draw: sample the selected variable along an arbitrary line between two map points. Set depth and draw the line under View, define color scheme under Color scale.",
   class:
-    "Class: show 3D point clouds for value bands through the water column. Set class range and density under Slice, define color scheme under Color scale.",
+    "Class: show 3D point clouds for value bands through the water column. Set class range and density under View, define color scheme under Color scale.",
 };
 
 const PLAYBACK_SURFACE_MAX = 180;
@@ -220,7 +225,7 @@ function defaultRange(varId: VarId) {
     min: 34,
     max: 35.6,
     ticks: [34, 34.1, 34.2, 34.3, 34.4, 34.5, 34.6, 34.7, 34.8, 34.9, 35, 35.1, 35.2, 35.3, 35.4, 35.5, 35.6],
-    title: "Salinity (g/kg)",
+    title: "Modeled Salinity",
   };
 }
 
@@ -367,22 +372,29 @@ function applySpatialMaskToVectorGrid(
   return { u, v };
 }
 
+const CMOCEAN_COLORMAP_OPTIONS = CMOCEAN_COLORMAP_IDS.map((id) => ({
+  id,
+  label: `cmocean.cm.${id}`,
+})) as ReadonlyArray<{ id: CmoceanColormapId; label: string }>;
+
 const FIELD_COLORMAP_OPTIONS: Array<{ id: FieldColormapId; label: string }> = [
-  { id: "thermal", label: "cmocean thermal" },
-  { id: "haline", label: "cmocean haline" },
-  { id: "balance", label: "cmocean balance" },
+  ...CMOCEAN_COLORMAP_OPTIONS,
   { id: "rdylbu_r", label: "RdYlBu_r" },
   { id: "viridis", label: "Viridis" },
   { id: "plasma", label: "Plasma" },
 ];
 
+const BATHY_SOURCE_OPTIONS: Array<{ id: BathySourceId; label: string; hint: string }> = [
+  { id: "model", label: "Topography with MITgcm model grid", hint: "4.5-1 km model-grid bathymetry." },
+  { id: "rtopo", label: "30 arcseconds RTopo-2.0.4", hint: "30 arcsec source, heavier but sharper." },
+];
+
 const BATHY_COLORMAP_OPTIONS: Array<{ id: BathyColormapId; label: string }> = [
-  { id: "deep", label: "cmocean deep" },
-  { id: "topo", label: "cmocean topo" },
+  { id: "bed_elevation", label: "Bed elevation" },
+  ...CMOCEAN_COLORMAP_OPTIONS,
   { id: "grayscale", label: "Grayscale" },
   { id: "blues_r", label: "Blues_r" },
   { id: "viridis", label: "Viridis" },
-  { id: "haline", label: "cmocean haline" },
 ];
 
 const DEFAULT_FIELD_COLORMAP: Record<VarId, FieldColormapId> = {
@@ -390,41 +402,35 @@ const DEFAULT_FIELD_COLORMAP: Record<VarId, FieldColormapId> = {
   S: "rdylbu_r",
 };
 
-const DEFAULT_BATHY_COLORMAP: BathyColormapId = "topo";
+const DEFAULT_BATHY_SOURCE: BathySourceId = "model";
+const DEFAULT_BATHY_COLORMAP: BathyColormapId = "bed_elevation";
 
 function paletteForColormapId(id: FieldColormapId | BathyColormapId): RGB[] {
+  if (isCmoceanColormapId(id)) return cmocean_256(id);
   switch (id) {
-    case "thermal":
-      return thermal_256();
-    case "haline":
-      return haline_256();
-    case "balance":
-      return balance_256();
     case "rdylbu_r":
       return rdylbu_r_256();
     case "viridis":
       return viridis_256();
     case "plasma":
       return plasma_256();
-    case "deep":
-      return deep_256();
-    case "topo":
-      return topo_256();
+    case "bed_elevation":
+      return bed_elevation_256();
     case "grayscale":
       return grayscale_256();
     case "blues_r":
       return blues_r_256();
     default:
-      return thermal_256();
+      return cmocean_256("thermal");
   }
 }
 
-const FALLBACK_FIELD_PALETTE = thermal_256();
+const FALLBACK_FIELD_PALETTE = cmocean_256("thermal");
 const FALLBACK_FIELD_CONTINUOUS = paletteToColorscale(FALLBACK_FIELD_PALETTE);
 
 const DEFAULT_COLOR_SETTINGS: Record<VarId, VarColorSettings> = {
   T: { cmin: -1, cmax: 8, tickCount: 10, mode: "continuous", levels: 12 },
-  S: { cmin: 34, cmax: 35.6, tickCount: 17, mode: "continuous", levels: 12 },
+  S: { cmin: 34, cmax: 35.6, tickCount: 9, mode: "continuous", levels: 12 },
 };
 
 const TICK_OPTIONS_BY_VAR: Record<VarId, number[]> = {
@@ -452,17 +458,90 @@ const SURFACE_FIELD_HEIGHT_M = 18;
 const SEA_ICE_HEIGHT_M = 65;
 const SEA_ICE_OPACITY = 0.55;
 const MOBILE_PANEL_BREAKPOINT_PX = 820;
+const PANEL_SIZE_STORAGE_KEY = "gs_panel_size_v1";
+const PANEL_MIN_WIDTH = 320;
+const PANEL_MIN_HEIGHT = 360;
+const PANEL_MAX_WIDTH = 620;
+const PANEL_MAX_HEIGHT = 900;
 function panelOpenStorageKey(isMobile: boolean) {
   return isMobile ? "gs_panel_open_mobile" : "gs_panel_open_desktop";
+}
+
+function clampPanelSize(
+  size: { width: number; height: number },
+  viewportWidth: number,
+  viewportHeight: number,
+  isMobile: boolean
+) {
+  const maxWidth = Math.max(PANEL_MIN_WIDTH, Math.min(PANEL_MAX_WIDTH, viewportWidth - (isMobile ? 24 : 32)));
+  const maxHeight = Math.max(PANEL_MIN_HEIGHT, Math.min(PANEL_MAX_HEIGHT, viewportHeight - (isMobile ? 24 : 32)));
+  return {
+    width: clamp(size.width, PANEL_MIN_WIDTH, maxWidth),
+    height: clamp(size.height, PANEL_MIN_HEIGHT, maxHeight),
+  };
+}
+
+function defaultPanelSize(viewportWidth: number, viewportHeight: number, isMobile: boolean) {
+  if (isMobile) {
+    return clampPanelSize(
+      {
+        width: viewportWidth - 24,
+        height: Math.max(420, viewportHeight - 24),
+      },
+      viewportWidth,
+      viewportHeight,
+      true
+    );
+  }
+  return clampPanelSize(
+    {
+      width: 420,
+      height: Math.max(640, viewportHeight - 32),
+    },
+    viewportWidth,
+    viewportHeight,
+    false
+  );
+}
+
+function readPanelSize(viewportWidth: number, viewportHeight: number) {
+  try {
+    if (typeof window !== "undefined") {
+      const isMobile = viewportWidth <= MOBILE_PANEL_BREAKPOINT_PX;
+      const raw = window.localStorage.getItem(PANEL_SIZE_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as { width?: number; height?: number };
+        const width = Number(parsed?.width);
+        const height = Number(parsed?.height);
+        if (Number.isFinite(width) && Number.isFinite(height)) {
+          return clampPanelSize({ width, height }, viewportWidth, viewportHeight, isMobile);
+        }
+      }
+      return defaultPanelSize(viewportWidth, viewportHeight, isMobile);
+    }
+  } catch {
+    // ignore
+  }
+  return defaultPanelSize(viewportWidth, viewportHeight, viewportWidth <= MOBILE_PANEL_BREAKPOINT_PX);
 }
 
 function makeTicks(min: number, max: number, tickCount: number) {
   if (!Number.isFinite(min) || !Number.isFinite(max)) return undefined;
   if (tickCount <= 1 || min === max) return undefined;
+  const span = max - min;
+  const rawStep = Math.abs(span) / Math.max(1, tickCount - 1);
+  const exponent = Math.floor(Math.log10(Math.max(rawStep, 1e-9)));
+  const fraction = rawStep / 10 ** exponent;
+  const niceFraction = fraction <= 1.5 ? 1 : fraction <= 3 ? 2 : fraction <= 4.5 ? 2.5 : fraction <= 7 ? 5 : 10;
+  const step = niceFraction * 10 ** exponent;
+  const start = Math.ceil(Math.min(min, max) / step) * step;
+  const end = Math.floor(Math.max(min, max) / step) * step;
   const out: number[] = [];
-  for (let i = 0; i < tickCount; i++) {
-    out.push(min + (i * (max - min)) / (tickCount - 1));
+  for (let v = start; v <= end + step * 0.25; v += step) {
+    out.push(Number(v.toFixed(6)));
+    if (out.length >= 240) break;
   }
+  if (out.length < 2) return [Number(min.toFixed(6)), Number(max.toFixed(6))].filter((v, i, arr) => arr.indexOf(v) === i);
   return out;
 }
 
@@ -816,7 +895,7 @@ function formatClassLabel(varId: VarId, value: number, interval: number, withUni
   const digits = varId === "T" ? (interval >= 1 ? 0 : 1) : interval >= 0.2 ? 1 : 2;
   const text = value.toFixed(digits);
   if (!withUnit) return text;
-  return varId === "T" ? `${text}°C` : `${text} g/kg`;
+  return varId === "T" ? `${text}°C` : text;
 }
 
 function classColorAt(value: number, cmin: number, cmax: number, palette: RGB[]) {
@@ -938,6 +1017,19 @@ function nudgeRangeValue(value: number, direction: 1 | -1, min: number, max: num
   return Number(next.toFixed(precision));
 }
 
+function nudgeBoundedValue(
+  value: number,
+  direction: 1 | -1,
+  step: number,
+  lowerBound: number,
+  upperBound: number
+) {
+  const safeStep = Number.isFinite(step) && step > 0 ? step : 1;
+  const precision = Math.min(6, rangeStepPrecision(safeStep));
+  const next = clamp(value + direction * safeStep, lowerBound, upperBound);
+  return Number(next.toFixed(precision));
+}
+
 function RangeNudgeSlider(props: {
   min: number;
   max: number;
@@ -945,12 +1037,66 @@ function RangeNudgeSlider(props: {
   value: number;
   onChange: (next: number) => void;
   disabled?: boolean;
+  buttonLayout?: "vertical" | "horizontal";
+  decreaseLabel?: string;
+  increaseLabel?: string;
 }) {
-  const { min, max, step = 1, value, onChange, disabled } = props;
+  const {
+    min,
+    max,
+    step = 1,
+    value,
+    onChange,
+    disabled,
+    buttonLayout = "vertical",
+    decreaseLabel = "v",
+    increaseLabel = "^",
+  } = props;
   const safeStep = Number.isFinite(step) && step > 0 ? step : 1;
   const epsilon = safeStep * 0.25;
   const canDecrease = !disabled && value > min + epsilon;
   const canIncrease = !disabled && value < max - epsilon;
+
+  const buttonStyle = { minWidth: 28, padding: "2px 8px", lineHeight: 1, fontWeight: 700 };
+
+  if (buttonLayout === "horizontal") {
+    return (
+      <div style={{ display: "grid", gridTemplateColumns: "auto 1fr auto", alignItems: "center", gap: 8 }}>
+        <button
+          type="button"
+          className="tab"
+          style={buttonStyle}
+          disabled={!canDecrease}
+          onClick={() => onChange(nudgeRangeValue(value, -1, min, max, safeStep))}
+          aria-label="Decrease slider value"
+          title="Previous"
+        >
+          {decreaseLabel}
+        </button>
+        <input
+          type="range"
+          min={min}
+          max={max}
+          step={safeStep}
+          value={value}
+          onChange={(e) => onChange(Number(e.target.value))}
+          style={{ width: "100%" }}
+          disabled={disabled}
+        />
+        <button
+          type="button"
+          className="tab"
+          style={buttonStyle}
+          disabled={!canIncrease}
+          onClick={() => onChange(nudgeRangeValue(value, 1, min, max, safeStep))}
+          aria-label="Increase slider value"
+          title="Next"
+        >
+          {increaseLabel}
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div style={{ display: "flex", alignItems: "stretch", gap: 8 }}>
@@ -968,24 +1114,24 @@ function RangeNudgeSlider(props: {
         <button
           type="button"
           className="tab"
-          style={{ minWidth: 28, padding: "2px 8px", lineHeight: 1, fontWeight: 700 }}
+          style={buttonStyle}
           disabled={!canIncrease}
           onClick={() => onChange(nudgeRangeValue(value, 1, min, max, safeStep))}
           aria-label="Increase slider value"
           title="Increase"
         >
-          ^
+          {increaseLabel}
         </button>
         <button
           type="button"
           className="tab"
-          style={{ minWidth: 28, padding: "2px 8px", lineHeight: 1, fontWeight: 700 }}
+          style={buttonStyle}
           disabled={!canDecrease}
           onClick={() => onChange(nudgeRangeValue(value, -1, min, max, safeStep))}
           aria-label="Decrease slider value"
           title="Decrease"
         >
-          v
+          {decreaseLabel}
         </button>
       </div>
     </div>
@@ -994,12 +1140,16 @@ function RangeNudgeSlider(props: {
 
 export default function App() {
   const panelRef = useRef<HTMLDivElement | null>(null);
+  const lastThreeViewportKeyRef = useRef<string>("");
   const [cameraResetNonce, setCameraResetNonce] = useState(0);
   const [viewportWidth, setViewportWidth] = useState(() =>
     typeof window !== "undefined" ? window.innerWidth : 1280
   );
   const [viewportHeight, setViewportHeight] = useState(() =>
     typeof window !== "undefined" ? window.innerHeight : 900
+  );
+  const [isFullscreen, setIsFullscreen] = useState(() =>
+    typeof document !== "undefined" ? Boolean(document.fullscreenElement) : false
   );
   const [panelOpen, setPanelOpen] = useState(() => {
     try {
@@ -1018,6 +1168,11 @@ export default function App() {
     return true;
   });
   const [panelPos, setPanelPos] = useState<{ left: number; top: number } | null>(null);
+  const [panelSize, setPanelSize] = useState(() =>
+    typeof window !== "undefined"
+      ? readPanelSize(window.innerWidth, window.innerHeight)
+      : defaultPanelSize(1280, 900, false)
+  );
   const [themeMode, setThemeMode] = useState<"night" | "day">(() => {
     try {
       const saved = window.localStorage.getItem("gs_theme_mode");
@@ -1039,6 +1194,33 @@ export default function App() {
   }, [panelOpen, viewportWidth]);
 
   useEffect(() => {
+    try {
+      const isMobile = viewportWidth <= MOBILE_PANEL_BREAKPOINT_PX;
+      const next = clampPanelSize(panelSize, viewportWidth, viewportHeight, isMobile);
+      if (next.width !== panelSize.width || next.height !== panelSize.height) {
+        setPanelSize(next);
+      }
+      window.localStorage.setItem(PANEL_SIZE_STORAGE_KEY, JSON.stringify(next));
+    } catch {
+      // ignore
+    }
+  }, [panelSize, viewportHeight, viewportWidth]);
+
+  useEffect(() => {
+    if (!panelPos) return;
+    const el = panelRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const maxLeft = Math.max(12, viewportWidth - rect.width - 12);
+    const maxTop = Math.max(12, viewportHeight - rect.height - 12);
+    const nextLeft = clamp(panelPos.left, 12, maxLeft);
+    const nextTop = clamp(panelPos.top, 12, maxTop);
+    if (nextLeft !== panelPos.left || nextTop !== panelPos.top) {
+      setPanelPos({ left: nextLeft, top: nextTop });
+    }
+  }, [panelPos, viewportHeight, viewportWidth]);
+
+  useEffect(() => {
     if (typeof window === "undefined") return;
     const onResize = () => {
       setViewportWidth(window.innerWidth);
@@ -1047,6 +1229,14 @@ export default function App() {
     onResize();
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    const onFs = () => setIsFullscreen(Boolean(document.fullscreenElement));
+    document.addEventListener("fullscreenchange", onFs);
+    onFs();
+    return () => document.removeEventListener("fullscreenchange", onFs);
   }, []);
 
   useEffect(() => {
@@ -1062,15 +1252,15 @@ export default function App() {
   const [viewModeHover, setViewModeHover] = useState<Exclude<ViewMode, "eddies"> | null>(null);
   const [varId, setVarId] = useState<VarId>("T");
   const projectOn3d = true;
-  const [overlayOpacity, setOverlayOpacity] = useState(0.9);
-  const [showColorbar, setShowColorbar] = useState(true);
-  const [showFieldContours, setShowFieldContours] = useState(false);
+  const [overlayOpacity, setOverlayOpacity] = useState(0);
   const [showBathy, setShowBathy] = useState(true);
-  const [showBathyContours, setShowBathyContours] = useState(false);
-  const [depthRatio, setDepthRatio] = useState(0.35);
+  const [depthRatio, setDepthRatio] = useState(0.5);
+  const [isDepthScalePending, startDepthScaleTransition] = useTransition();
+  const deferredDepthRatio = useDeferredValue(depthRatio);
   const [depthWarpMode, setDepthWarpMode] = useState<"linear" | "upper">("upper");
-  const [depthFocusM, setDepthFocusM] = useState(2500);
-  const [deepRatio, setDeepRatio] = useState(0.25);
+  const [depthFocusM, setDepthFocusM] = useState(1800);
+  const [deepRatio, setDeepRatio] = useState(0.18);
+  const [bathySource, setBathySource] = useState<BathySourceId>(DEFAULT_BATHY_SOURCE);
   const [colorSettings, setColorSettings] = useState<Record<VarId, VarColorSettings>>(
     DEFAULT_COLOR_SETTINGS
   );
@@ -1082,6 +1272,7 @@ export default function App() {
     DEFAULT_FIELD_COLORMAP
   );
   const [bathyColormap, setBathyColormap] = useState<BathyColormapId>(DEFAULT_BATHY_COLORMAP);
+
   const [colorInputByVar, setColorInputByVar] = useState<Record<VarId, ClassInputSettings>>({
     T: {
       min: String(DEFAULT_COLOR_SETTINGS.T.cmin),
@@ -1170,6 +1361,13 @@ export default function App() {
     }
   });
   const [showWind, setShowWind] = useState(false);
+  const windHorizontalDefaultAppliedRef = useRef(false);
+  useEffect(() => {
+    if (viewMode !== "horizontal") return;
+    if (windHorizontalDefaultAppliedRef.current) return;
+    windHorizontalDefaultAppliedRef.current = true;
+    setShowWind(true);
+  }, [viewMode]);
   useEffect(() => {
     try {
       window.localStorage.setItem(GSR_MASK_STORAGE_KEY, showGsrMask ? "1" : "0");
@@ -1242,11 +1440,28 @@ export default function App() {
   const [bathyInfo, setBathyInfo] = useState<{
     plotly: "loading" | "ready" | "failed";
     bathy: "loading" | "file" | "synthetic";
-  }>({ plotly: "loading", bathy: "loading" });
+    horizontalImage: "off" | "loading" | "ready" | "failed";
+    transectImage: "off" | "loading" | "ready" | "failed";
+  }>({
+    plotly: "loading",
+    bathy: "loading",
+    horizontalImage: "off",
+    transectImage: "off",
+  });
 
   const handleStatusChange = useCallback(
-    (s: { plotly: "loading" | "ready" | "failed"; bathy: "loading" | "file" | "synthetic" }) =>
-      setBathyInfo({ plotly: s.plotly, bathy: s.bathy }),
+    (s: {
+      plotly: "loading" | "ready" | "failed";
+      bathy: "loading" | "file" | "synthetic";
+      horizontalImage: "off" | "loading" | "ready" | "failed";
+      transectImage: "off" | "loading" | "ready" | "failed";
+    }) =>
+      setBathyInfo({
+        plotly: s.plotly,
+        bathy: s.bathy,
+        horizontalImage: s.horizontalImage,
+        transectImage: s.transectImage,
+      }),
     []
   );
 
@@ -1255,6 +1470,13 @@ export default function App() {
   const classSettings = classSettingsByVar[varId];
   const classInputs = classInputByVar[varId];
   const colorInputs = colorInputByVar[varId];
+  const colorScaleStep = useMemo(() => {
+    if (range.ticks.length >= 2) return Math.abs(range.ticks[1] - range.ticks[0]);
+    return Math.max(0.01, (range.max - range.min) / 10);
+  }, [range.max, range.min, range.ticks]);
+  const tickCountOptions = useMemo(() => [0, ...TICK_OPTIONS_BY_VAR[varId]], [varId]);
+  const tickCountIndex = tickCountOptions.indexOf(settings.tickCount);
+  const safeTickCountIndex = tickCountIndex >= 0 ? tickCountIndex : 0;
   const classMin = Math.min(classSettings.min, classSettings.max);
   const classMax = Math.max(classSettings.min, classSettings.max);
   const classInterval = classSettings.interval;
@@ -1277,29 +1499,51 @@ export default function App() {
   );
   const isMobileViewport = viewportWidth <= MOBILE_PANEL_BREAKPOINT_PX;
   const isMobilePortraitViewport = isMobileViewport && viewportHeight > viewportWidth;
-  const showColorbarActive = showColorbar && !(isMobilePortraitViewport && !panelOpen);
+  const panelBoxSize = clampPanelSize(panelSize, viewportWidth, viewportHeight, isMobileViewport);
+  const threeCameraAutoFitKey = `${viewportWidth}x${viewportHeight}|${panelOpen ? 1 : 0}|${bathySource}`;
+  const feedbackLabelColor =
+    themeMode === "day" ? "rgba(15, 23, 42, 0.72)" : "rgba(241, 245, 249, 0.76)";
+  const feedbackLinkColor =
+    themeMode === "day" ? "rgba(15, 23, 42, 0.94)" : "rgba(248, 250, 252, 0.92)";
+
+  useEffect(() => {
+    if (viewMode !== "horizontal") return;
+    const nextKey = `${viewportWidth}x${viewportHeight}|${panelOpen ? 1 : 0}`;
+    if (lastThreeViewportKeyRef.current && lastThreeViewportKeyRef.current !== nextKey) {
+      setCameraResetNonce((n) => n + 1);
+    }
+    lastThreeViewportKeyRef.current = nextKey;
+  }, [panelOpen, viewMode, viewportHeight, viewportWidth]);
+  const showColorbarActive = !(isMobilePortraitViewport && !panelOpen);
   const hasSeaIceColorbar = projectOn3d && showSeaIce && showColorbarActive;
+  const scalarColorbarLen = hasSeaIceColorbar
+    ? isMobileViewport
+      ? 0.24
+      : 0.24
+    : isMobileViewport
+      ? 0.66
+      : 0.84;
   const mainColorbarLayout = useMemo(
     () =>
       hasSeaIceColorbar
         ? isMobileViewport
-          ? { x: 0.985, y: 0.68, len: 0.46 }
-          : { x: 1.03, y: 0.69, len: 0.60 }
+          ? { x: 0.985, y: 0.72, len: scalarColorbarLen }
+          : { x: 1.03, y: 0.76, len: scalarColorbarLen }
         : isMobileViewport
           ? { x: 0.985, y: 0.50, len: 0.66 }
           : { x: 1.03, y: 0.50, len: 0.84 },
-    [hasSeaIceColorbar, isMobileViewport]
+    [hasSeaIceColorbar, isMobileViewport, scalarColorbarLen]
   );
   const seaIceColorbarLayout = useMemo(
     () =>
       showColorbarActive
         ? isMobileViewport
-          ? { x: 0.985, y: 0.17, len: 0.18 }
-          : { x: 1.03, y: 0.17, len: 0.26 }
+          ? { x: 0.985, y: 0.42, len: scalarColorbarLen }
+          : { x: 1.03, y: 0.46, len: scalarColorbarLen }
         : isMobileViewport
           ? { x: 0.985, y: 0.50, len: 0.66 }
           : { x: 1.03, y: 0.50, len: 0.84 },
-    [isMobileViewport, showColorbarActive]
+    [isMobileViewport, scalarColorbarLen, showColorbarActive]
   );
 
   const timeList = meta?.timeIso ?? [];
@@ -1320,11 +1564,55 @@ export default function App() {
   );
   const activeTimeLabel = timeList[safeTimeIdx] ?? "n/a";
   const activeDepthLabel = zList.length ? `${Math.round(zList[safeDepthIdx])} m` : "n/a";
+  const activeOverlaySummary = [
+    showWind ? "wind stress on ocean" : null,
+    showSeaIce ? "sea ice" : null,
+  ].filter(Boolean) as string[];
+  const activeOverlayText = activeOverlaySummary.length
+    ? ` ${activeOverlaySummary.join(" and ")} ${activeOverlaySummary.length === 1 ? "is" : "are"} on.`
+    : "";
+  const horizontalModeLabel = overlayOpacity > 0.001 ? range.title : "Topography";
+  const currentModeSummary =
+    viewMode === "horizontal"
+      ? overlayOpacity > 0.001
+        ? `Horizontal mode is showing ${horizontalModeLabel} at ${activeDepthLabel} and ${activeTimeLabel}.${activeOverlayText}`
+        : `Horizontal mode is showing ${horizontalModeLabel}.${activeOverlayText}`
+      : viewMode === "transect"
+        ? `Transect mode is showing a west-east section at ${latTarget.toFixed(2)}°N and ${activeTimeLabel}.${activeOverlayText}`
+        : viewMode === "draw"
+          ? `Draw mode is showing your transect cross-section at ${activeTimeLabel}${drawTransectPoints.length >= 2 ? " with the drawn line active." : "."}${activeOverlayText}`
+          : viewMode === "class"
+            ? `Class mode is showing ${range.title} point-cloud classes between ${classMin} and ${classMax} at ${activeTimeLabel}.${activeOverlayText}`
+            : `Eddy mode is showing eddy detections at ${activeTimeLabel}.${activeOverlayText}`;
+  const timeCoverageLabel =
+    timeList.length > 1 ? `${timeList[0]} to ${timeList[timeList.length - 1]}` : timeList[0] ?? "n/a";
+  const depthCoverageLabel =
+    zList.length > 1 ? `${Math.round(zList[0])} to ${Math.round(zList[zList.length - 1])} m` : "n/a";
+  const domainLabel = `${lonMin.toFixed(1)} to ${lonMax.toFixed(1)} lon, ${latMin.toFixed(1)} to ${latMax.toFixed(1)} lat`;
+  const loadErrors = [
+    metaStatus === "failed" && metaError ? `Metadata: ${metaError}` : null,
+    sliceStatus === "failed" && sliceError ? `Slice: ${sliceError}` : null,
+    classStatus === "failed" && classError ? `Class: ${classError}` : null,
+    eddyStatus === "failed" && eddyError ? `Eddies: ${eddyError}` : null,
+    seaIceStatus === "failed" && seaIceError ? `Sea ice: ${seaIceError}` : null,
+    windStatus === "failed" && windError ? `Wind: ${windError}` : null,
+  ].filter(Boolean) as string[];
 
   const availableVars = useMemo(() => {
     const vars = meta?.variables?.filter((v) => v.available).map((v) => v.id) ?? [];
     return vars.length ? (vars as VarId[]) : (["T"] as VarId[]);
   }, [meta]);
+  const hasTemperature = availableVars.includes("T");
+  const hasSalinity = availableVars.includes("S");
+
+  const activateScalarVariable = useCallback(
+    (nextVar: VarId) => {
+      if (!availableVars.includes(nextVar)) return;
+      setVarId(nextVar);
+      setOverlayOpacity((prev) => (prev > 0.001 ? prev : 0.9));
+    },
+    [availableVars]
+  );
 
   useEffect(() => {
     const nextMin = String(classSettings.min);
@@ -1482,6 +1770,46 @@ export default function App() {
       }));
     },
     [setDrawAutoColorRangeEnabled, varId, viewMode]
+  );
+
+  const nudgeColorScaleBound = useCallback(
+    (bound: "min" | "max", direction: 1 | -1) => {
+      if (viewMode === "draw") setDrawAutoColorRangeEnabled(false);
+      const currentMin = settings.cmin;
+      const currentMax = settings.cmax;
+      const next =
+        bound === "min"
+          ? nudgeBoundedValue(currentMin, direction, colorScaleStep, Number.NEGATIVE_INFINITY, currentMax)
+          : nudgeBoundedValue(currentMax, direction, colorScaleStep, currentMin, Number.POSITIVE_INFINITY);
+      const colorKey = bound === "min" ? "cmin" : "cmax";
+      setColorSettings((prev) => ({
+        ...prev,
+        [varId]: {
+          ...prev[varId],
+          [colorKey]: next,
+        },
+      }));
+      setColorInputByVar((prev) => ({
+        ...prev,
+        [varId]: {
+          ...(prev[varId] ?? { min: "", max: "" }),
+          [bound]: String(next),
+        },
+      }));
+    },
+    [colorScaleStep, setDrawAutoColorRangeEnabled, settings.cmax, settings.cmin, varId, viewMode]
+  );
+
+  const nudgeTickCount = useCallback(
+    (direction: 1 | -1) => {
+      const nextIndex = clamp(safeTickCountIndex + direction, 0, tickCountOptions.length - 1);
+      const next = tickCountOptions[nextIndex];
+      setColorSettings((prev) => ({
+        ...prev,
+        [varId]: { ...prev[varId], tickCount: next },
+      }));
+    },
+    [safeTickCountIndex, tickCountOptions, varId]
   );
 
   const commitEddyThresholdInput = useCallback(() => {
@@ -2333,11 +2661,14 @@ export default function App() {
   const showHorizontalColorbar =
     showColorbarActive &&
     (viewMode === "horizontal" || (viewMode === "draw" && !transectRender));
+  const scalarFieldVisible = overlayOpacity > 0.001;
 
   const horizontalField = useMemo(() => {
     if (!meta || !projectOn3d || !horizontalRender) return undefined;
     if (viewMode !== "horizontal" && viewMode !== "draw") return undefined;
+    if (!scalarFieldVisible) return undefined;
     if (drawTransectComplete) return undefined;
+    const dataColorbarTitle = varId === "T" ? "Modeled Temperature (°C)" : range.title;
     return {
       enabled: true,
       values: horizontalRender.values,
@@ -2350,7 +2681,7 @@ export default function App() {
       mode: "surface" as const,
       zPlane: selectedSliceZ,
       showScale: showHorizontalColorbar,
-      colorbarTitle: range.title,
+      colorbarTitle: dataColorbarTitle,
       colorbarTicks,
       colorbarLen: mainColorbarLayout.len,
       colorbarX: mainColorbarLayout.x,
@@ -2364,6 +2695,7 @@ export default function App() {
     meta,
     overlayOpacity,
     projectOn3d,
+    scalarFieldVisible,
     showHorizontalColorbar,
     drawTransectComplete,
     colorbarTicks,
@@ -2381,12 +2713,14 @@ export default function App() {
   const transectField = useMemo(() => {
     if (!meta || !projectOn3d || !transectRender) return undefined;
     if (viewMode !== "transect" && viewMode !== "draw") return undefined;
+    if (!scalarFieldVisible) return undefined;
     const cmin = drawAutoColorRangeActive && drawTransectAutoRange ? drawTransectAutoRange.min : settings.cmin;
     const cmax = drawAutoColorRangeActive && drawTransectAutoRange ? drawTransectAutoRange.max : settings.cmax;
     const transectColorbarTicks =
       drawAutoColorRangeActive && drawTransectAutoRange && settings.tickCount > 0
         ? makeTicks(drawTransectAutoRange.min, drawTransectAutoRange.max, settings.tickCount)
         : colorbarTicks;
+    const dataColorbarTitle = varId === "T" ? "Modeled Temperature (°C)" : range.title;
     return {
       enabled: true,
       lat: transectRender.lat,
@@ -2399,7 +2733,7 @@ export default function App() {
       colorscale,
       opacity: overlayOpacity,
       showScale: showColorbarActive,
-      colorbarTitle: range.title,
+      colorbarTitle: dataColorbarTitle,
       colorbarTicks: transectColorbarTicks,
       colorbarLen: mainColorbarLayout.len,
       colorbarX: mainColorbarLayout.x,
@@ -2413,6 +2747,7 @@ export default function App() {
     meta,
     overlayOpacity,
     projectOn3d,
+    scalarFieldVisible,
     showColorbarActive,
     range.title,
     settings.cmax,
@@ -2448,11 +2783,11 @@ export default function App() {
       mode: "surface" as const,
       zPlane: SEA_ICE_HEIGHT_M,
       showScale: showColorbarActive,
-      colorbarTitle: `Sea ice (${cmin.toFixed(2)}–1)`,
       colorbarTicks: [cmin, 0.5, 0.75, 1].filter((v, i, arr) => arr.indexOf(v) === i),
       colorbarLen: seaIceColorbarLayout.len,
       colorbarX: seaIceColorbarLayout.x,
       colorbarY: seaIceColorbarLayout.y,
+      colorbarTitle: "Sea ice concentration",
     };
   }, [
     meta,
@@ -2503,9 +2838,10 @@ export default function App() {
     const classValues = classTraces.map((t) => t.value).sort((a, b) => a - b);
     const ticks = pickClassTicks(classValues, 12);
     const tickText = ticks.map((v) => formatClassLabel(varId, v, classInterval, false));
+    const classLabel = varId === "T" ? "Modeled Temperature" : range.title;
     return {
       enabled: true,
-      varLabel: range.title,
+      varLabel: classLabel,
       points: classTraces,
       markerSize: playing ? 2.2 : 2.8,
       opacity: 0.7,
@@ -2514,7 +2850,7 @@ export default function App() {
       cmax: classMax,
       colorscale: makeClassDiscreteColorscale(classValues, classMin, classMax, fieldPalette),
       showScale: showColorbarActive,
-      colorbarTitle: `${range.title} class`,
+      colorbarTitle: `${classLabel} class`,
       colorbarTicks: ticks,
       colorbarTickText: tickText,
       colorbarLen: mainColorbarLayout.len,
@@ -2538,6 +2874,18 @@ export default function App() {
     varId,
     viewMode,
   ]);
+  const showBathyColorbar =
+    showColorbarActive &&
+    showBathy &&
+    !showHorizontalColorbar &&
+    !(transectField?.showScale ?? false) &&
+    !(classLayer?.showScale ?? false);
+  const showBathyColorbarThree = showColorbarActive && showBathy;
+  const bathyColorbarTitle = "Topography";
+  const bathyColorbarSubtitle =
+    bathySource === "rtopo"
+      ? "30 arcseconds RTopo-2.0.4 bed elevation (m)"
+      : "Topography with MITgcm model grid";
 
   const eddyLayer = useMemo(() => {
     if (!meta || !projectOn3d || viewMode !== "eddies" || !eddyDetection || !eddyVolume) return undefined;
@@ -2601,11 +2949,71 @@ export default function App() {
   const resetCamera = useCallback(() => {
     try {
       window.localStorage.removeItem("gs_scene_camera_v1");
+      window.localStorage.removeItem("gs_scene_camera_three_v1");
     } catch {
       // ignore
     }
     setCameraResetNonce((n) => n + 1);
   }, []);
+
+  const toggleFullscreen = useCallback(() => {
+    if (typeof document === "undefined") return;
+    if (document.fullscreenElement) {
+      void document.exitFullscreen?.();
+    } else {
+      void document.documentElement.requestFullscreen?.();
+    }
+  }, []);
+
+  const startPanelResize = useCallback(
+    (corner: PanelResizeCorner, e: React.PointerEvent<HTMLDivElement>) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const el = panelRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      const startX = e.clientX;
+      const startY = e.clientY;
+      const startWidth = rect.width;
+      const startHeight = rect.height;
+      const startLeft = panelPos?.left ?? rect.left;
+      const startTop = panelPos?.top ?? rect.top;
+      const isWest = corner === "nw" || corner === "sw";
+      const isNorth = corner === "nw" || corner === "ne";
+
+      const onMove = (ev: PointerEvent) => {
+        const rawWidth = startWidth + (corner === "ne" || corner === "se" ? ev.clientX - startX : startX - ev.clientX);
+        const rawHeight =
+          startHeight + (corner === "sw" || corner === "se" ? ev.clientY - startY : startY - ev.clientY);
+        const nextSize = clampPanelSize(
+          { width: rawWidth, height: rawHeight },
+          viewportWidth,
+          viewportHeight,
+          isMobileViewport
+        );
+        const maxLeft = Math.max(12, viewportWidth - nextSize.width - 12);
+        const maxTop = Math.max(12, viewportHeight - nextSize.height - 12);
+        const nextLeft = isWest ? startLeft + (startWidth - nextSize.width) : startLeft;
+        const nextTop = isNorth ? startTop + (startHeight - nextSize.height) : startTop;
+        setPanelSize(nextSize);
+        setPanelPos({
+          left: clamp(nextLeft, 12, maxLeft),
+          top: clamp(nextTop, 12, maxTop),
+        });
+      };
+
+      const onUp = () => {
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+        window.removeEventListener("pointercancel", onUp);
+      };
+
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+      window.addEventListener("pointercancel", onUp);
+    },
+    [isMobileViewport, panelPos?.left, panelPos?.top, viewportHeight, viewportWidth]
+  );
 
   const autoColorScaleFromFrame = useCallback(() => {
     if (viewMode === "draw") setDrawAutoColorRangeEnabled(false);
@@ -2626,31 +3034,71 @@ export default function App() {
     }));
   }, [horizontalValuesMasked, setDrawAutoColorRangeEnabled, transectValuesMasked, varId, viewMode]);
 
+  const effectiveRenderer3d: Renderer3D = viewMode === "horizontal" ? "three" : "plotly";
+
   return (
     <div className="app">
-      <Basemap3D
-        bathySource="bathy"
-        bathyPalette={bathyPalette}
-        bathyOpacity={drawTransectComplete ? 0.22 : 1}
-        compactLayout={isMobileViewport}
-        cameraFocusPath={drawCameraFocusPath}
-        cameraResetNonce={cameraResetNonce}
-        depthRatio={depthRatio}
-        depthWarp={{ mode: depthWarpMode, focusDepthM: depthFocusM, deepRatio }}
-        showBathy={showBathy}
-        onStatusChange={handleStatusChange}
-        showBathyContours={showBathyContours}
-        showFieldContours={showFieldContours}
-        horizontalField={horizontalField}
-        horizontalPlanes={horizontalPlanes}
-        guidePath={drawGuidePath}
-        windLayer={windLayer}
-        classLayer={classLayer}
-        eddyLayer={eddyLayer}
-        transectField={transectField}
-        onSurfacePick={handleDrawSurfacePick}
-        onSurfaceHover={handleDrawSurfaceHover}
-      />
+      {effectiveRenderer3d === "three" ? (
+        <BasemapThree
+          bathySource={bathySource}
+          bathyPalette={bathyPalette}
+          bathyOpacity={drawTransectComplete ? 0.22 : 1}
+          bathyColorbar={{
+            enabled: showBathyColorbarThree,
+            title: bathyColorbarTitle,
+            subtitle: bathyColorbarSubtitle,
+            len: mainColorbarLayout.len,
+            x: mainColorbarLayout.x,
+            y: mainColorbarLayout.y,
+          }}
+          compactLayout={isMobileViewport}
+          cameraAutoFitKey={threeCameraAutoFitKey}
+          cameraResetNonce={cameraResetNonce}
+          depthRatio={deferredDepthRatio}
+          themeMode={themeMode}
+          showBathy={showBathy}
+          onStatusChange={handleStatusChange}
+          horizontalField={horizontalField}
+          horizontalPlanes={horizontalPlanes}
+          windLayer={windLayer}
+          guidePath={drawGuidePath}
+          onSurfacePick={handleDrawSurfacePick}
+          onSurfaceHover={handleDrawSurfaceHover}
+          viewerHint={currentModeSummary}
+        />
+      ) : (
+        <Basemap3D
+          bathySource={bathySource}
+          bathyPalette={bathyPalette}
+          bathyOpacity={drawTransectComplete ? 0.22 : 1}
+          bathyColorbar={{
+            enabled: showBathyColorbar,
+            title: bathyColorbarTitle,
+            subtitle: bathyColorbarSubtitle,
+            len: mainColorbarLayout.len,
+            x: mainColorbarLayout.x,
+            y: mainColorbarLayout.y,
+          }}
+          compactLayout={isMobileViewport}
+          cameraFocusPath={drawCameraFocusPath}
+          cameraResetNonce={cameraResetNonce}
+          depthRatio={deferredDepthRatio}
+          depthWarp={{ mode: depthWarpMode, focusDepthM: depthFocusM, deepRatio }}
+          themeMode={themeMode}
+          showBathy={showBathy}
+          onStatusChange={handleStatusChange}
+          horizontalField={horizontalField}
+          horizontalPlanes={horizontalPlanes}
+          guidePath={drawGuidePath}
+          windLayer={windLayer}
+          classLayer={classLayer}
+          eddyLayer={eddyLayer}
+          transectField={transectField}
+          onSurfacePick={handleDrawSurfacePick}
+          onSurfaceHover={handleDrawSurfaceHover}
+          viewerHint={currentModeSummary}
+        />
+      )}
 
       <div className="overlay">
         {!panelOpen ? (
@@ -2665,9 +3113,11 @@ export default function App() {
         ) : (
           <div
             ref={panelRef}
-            className="panel controlPanel"
+            className="panel controlPanel iosSettingsPanel"
             style={{
               left: panelPos?.left ?? (isMobileViewport ? 12 : 16),
+              width: panelBoxSize.width,
+              height: panelBoxSize.height,
               ...(panelPos
                 ? { top: panelPos.top }
                 : isMobileViewport
@@ -2681,6 +3131,7 @@ export default function App() {
               onDoubleClick={() => setPanelPos(null)}
               onPointerDown={(e) => {
                 if ((e.target as HTMLElement | null)?.closest?.("button")) return;
+                e.preventDefault();
                 const el = panelRef.current;
                 if (!el) return;
                 const rect = el.getBoundingClientRect();
@@ -2717,7 +3168,7 @@ export default function App() {
                 <button
                   type="button"
                   className="panelIconButton"
-                  title="Reset 3D view"
+                  title="Default northward/meridional view"
                   onClick={resetCamera}
                 >
                   ⟲
@@ -2729,6 +3180,14 @@ export default function App() {
                   onClick={() => setThemeMode((m) => (m === "night" ? "day" : "night"))}
                 >
                   {themeMode === "night" ? "☀" : "☾"}
+                </button>
+                <button
+                  type="button"
+                  className="panelIconButton"
+                  title={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+                  onClick={toggleFullscreen}
+                >
+                  {isFullscreen ? "⤡" : "⤢"}
                 </button>
               </div>
               <div className="panelHeaderRight">
@@ -2744,6 +3203,26 @@ export default function App() {
               </div>
             </div>
 
+            <div
+              className="panelResizeHandle panelResizeHandleNW"
+              title="Resize panel"
+              onPointerDown={(e) => startPanelResize("nw", e)}
+            />
+            <div
+              className="panelResizeHandle panelResizeHandleNE"
+              title="Resize panel"
+              onPointerDown={(e) => startPanelResize("ne", e)}
+            />
+            <div
+              className="panelResizeHandle panelResizeHandleSW"
+              title="Resize panel"
+              onPointerDown={(e) => startPanelResize("sw", e)}
+            />
+            <div
+              className="panelResizeHandle panelResizeHandleSE"
+              title="Resize panel"
+              onPointerDown={(e) => startPanelResize("se", e)}
+            />
             <div className="title" style={{ marginBottom: 0 }}>
               <div>
                 <h1>Nordic Seas</h1>
@@ -2755,6 +3234,10 @@ export default function App() {
               <details className="section" open>
                 <summary>View</summary>
                 <div className="sectionBody">
+                  <div className="sectionSubheadRow">
+                    <span className="sectionGlyph sectionGlyphMode" aria-hidden>◫</span>
+                    <div className="sectionSubhead">View mode</div>
+                  </div>
                   <div className="tabs">
                     <button
                       className={`tab ${viewMode === "horizontal" ? "tabActive" : ""}`}
@@ -2803,30 +3286,113 @@ export default function App() {
                   </div>
                   <div className="hint">{viewModeDescription}</div>
 
+                  <div className="sectionSubheadRow">
+                    <span className="sectionGlyph sectionGlyphTopo" aria-hidden>⌂</span>
+                    <div className="sectionSubhead">Topography</div>
+                  </div>
                   <label>
-                    Variable
-                    <select value={varId} onChange={(e) => setVarId(e.target.value as VarId)}>
-                      {meta?.variables?.map((v) => (
-                        <option key={v.id} value={v.id} disabled={!v.available}>
-                          {v.label}
-                          {!v.available ? " (missing in selected Zarr)" : ""}
+                    Topography source
+                    <select value={bathySource} onChange={(e) => setBathySource(e.target.value as BathySourceId)}>
+                      {BATHY_SOURCE_OPTIONS.map((opt) => (
+                        <option key={opt.id} value={opt.id}>
+                          {opt.label}
                         </option>
-                      )) ?? (
-                        <>
-                          <option value="T">Temperature (T)</option>
-                          <option value="S">Salinity (S)</option>
-                        </>
-                      )}
+                      ))}
+                    </select>
+                    <div className="hint">
+                      {BATHY_SOURCE_OPTIONS.find((opt) => opt.id === bathySource)?.hint ??
+                        "Choose the terrain source."}
+                    </div>
+                  </label>
+
+                  <label>
+                    Topography colormap
+                    <select
+                      value={bathyColormap}
+                      onChange={(e) => setBathyColormap(e.target.value as BathyColormapId)}
+                    >
+                      {BATHY_COLORMAP_OPTIONS.map((opt) => (
+                        <option key={opt.id} value={opt.id}>
+                          {opt.label}
+                        </option>
+                      ))}
                     </select>
                   </label>
 
                   <label>
-                    Overlay opacity
+                    Vertical scaling ({depthRatio.toFixed(2)}x)
+                    <RangeNudgeSlider
+                      min={0.15}
+                      max={1.5}
+                      step={0.05}
+                      value={depthRatio}
+                      onChange={(next) => {
+                        startDepthScaleTransition(() => {
+                          setDepthRatio(next);
+                        });
+                      }}
+                    />
+                    <div className="hint">
+                      {isDepthScalePending
+                        ? "Updating 3D scale..."
+                        : "Higher values emphasize ridges, shelves, and basin walls."}
+                    </div>
+                  </label>
+                  <div className="toggleRow">
+                    <div>Topography</div>
+                    <ToggleSwitch checked={showBathy} onCheckedChange={setShowBathy} />
+                  </div>
+
+                  <div className="sectionSubheadRow">
+                    <span className="sectionGlyph sectionGlyphVars" aria-hidden>∑</span>
+                    <div className="sectionSubhead">Variables</div>
+                  </div>
+                  <div className="toggleGrid2">
+                    <div className="toggleRow">
+                      <div>Temperature</div>
+                      <ToggleSwitch
+                        checked={scalarFieldVisible && varId === "T"}
+                        onCheckedChange={(checked) => {
+                          if (checked) {
+                            activateScalarVariable("T");
+                          } else if (varId === "T") {
+                            setOverlayOpacity(0);
+                          }
+                        }}
+                        disabled={!hasTemperature}
+                      />
+                    </div>
+                    <div className="toggleRow">
+                    <div>Salinity</div>
+                      <ToggleSwitch
+                        checked={scalarFieldVisible && varId === "S"}
+                        onCheckedChange={(checked) => {
+                          if (checked) {
+                            activateScalarVariable("S");
+                          } else if (varId === "S") {
+                            setOverlayOpacity(0);
+                          }
+                        }}
+                        disabled={!hasSalinity}
+                      />
+                    </div>
+                    <div className="toggleRow">
+                      <div>Wind stress on ocean</div>
+                      <ToggleSwitch checked={showWind} onCheckedChange={setShowWind} />
+                    </div>
+                    <div className="toggleRow">
+                      <div>Sea ice</div>
+                      <ToggleSwitch checked={showSeaIce} onCheckedChange={setShowSeaIce} />
+                    </div>
+                  </div>
+                  <label>
+                    Field opacity
                     <select
                       value={String(overlayOpacity)}
                       onChange={(e) => setOverlayOpacity(Number(e.target.value))}
                       disabled={!projectOn3d}
                     >
+                      <option value="0">0.00</option>
                       <option value="0.65">0.65</option>
                       <option value="0.75">0.75</option>
                       <option value="0.85">0.85</option>
@@ -2835,67 +3401,255 @@ export default function App() {
                       <option value="1">1.00</option>
                     </select>
                   </label>
+                  <div className="hint">
+                    Temperature and Modeled Salinity share one scalar layer; turning one on switches the other off.
+                  </div>
 
-                  <div className="toggleRow">
-                    <div>Colorbar</div>
-                    <ToggleSwitch checked={showColorbar} onCheckedChange={setShowColorbar} />
+                  <div className="sectionSubheadRow">
+                    <span className="sectionGlyph sectionGlyphColor" aria-hidden>◐</span>
+                    <div className="sectionSubhead">Color scale</div>
                   </div>
-                  <div className="toggleRow">
-                    <div>Field contours</div>
-                    <ToggleSwitch checked={showFieldContours} onCheckedChange={setShowFieldContours} />
-                  </div>
-                  <div className="toggleRow">
-                    <div>Bathy</div>
-                    <ToggleSwitch checked={showBathy} onCheckedChange={setShowBathy} />
-                  </div>
-                  <div className="toggleRow">
-                    <div>Bathy contours</div>
-                    <ToggleSwitch checked={showBathyContours} onCheckedChange={setShowBathyContours} />
-                  </div>
-                  <div className="toggleRow">
-                    <div>Wind stress on ocean</div>
-                    <ToggleSwitch checked={showWind} onCheckedChange={setShowWind} />
-                  </div>
-                  <div className="toggleRow">
-                    <div>Sea ice</div>
-                    <ToggleSwitch checked={showSeaIce} onCheckedChange={setShowSeaIce} />
-                  </div>
-                  <div className="toggleRow">
-                    <div>GSR mask</div>
-                    <ToggleSwitch checked={showGsrMask} onCheckedChange={setShowGsrMask} />
-                  </div>
-                  <div className="toggleRow">
-                    <div>Greenland Sea mask</div>
-                    <ToggleSwitch checked={showGreenlandSeaMask} onCheckedChange={setShowGreenlandSeaMask} />
-                  </div>
-                  <div className="toggleRow">
-                    <div>Iceland Sea mask</div>
-                    <ToggleSwitch checked={showIcelandSeaMask} onCheckedChange={setShowIcelandSeaMask} />
-                  </div>
-                  <div className="toggleRow">
-                    <div>Norwegian Sea mask</div>
-                    <ToggleSwitch checked={showNorwegianSeaMask} onCheckedChange={setShowNorwegianSeaMask} />
-                  </div>
-                  <div className="hint">Turn on a mask to hide that subdomain; none selected = full domain.</div>
-                  {allSubdomainMasksEnabled ? (
-                    <div className="hint" style={{ color: "rgba(255,196,120,0.96)" }}>
-                      All four masks are on, so Temperature/Salinity are hidden everywhere.
+                  {viewMode === "eddies" ? (
+                    <div className="hint">
+                      Eddy mode uses fixed warm/cold anomaly colors. Variable choice still controls the detector.
                     </div>
                   ) : null}
-                  {anySubdomainMaskEnabled ? (
+                  <label>
+                    {varId === "T" ? "Temperature colormap" : "Modeled Salinity colormap"}
+                    <select
+                      value={fieldColormapByVar[varId]}
+                      onChange={(e) =>
+                        setFieldColormapByVar((prev) => ({
+                          ...prev,
+                          [varId]: e.target.value as FieldColormapId,
+                        }))
+                      }
+                    >
+                      {FIELD_COLORMAP_OPTIONS.map((opt) => (
+                        <option key={opt.id} value={opt.id}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  {viewMode === "draw" ? (
+                    <>
+                      <label
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 8,
+                          justifyContent: "space-between",
+                        }}
+                      >
+                        <span>Auto range from transect</span>
+                        <ToggleSwitch
+                          checked={drawAutoColorRangeByVar[varId]}
+                          onCheckedChange={(checked) => setDrawAutoColorRangeEnabled(checked)}
+                        />
+                      </label>
+                      <div className="hint">
+                        {drawTransectAutoRange
+                          ? `Current transect range: ${drawTransectAutoRange.min.toFixed(3)} to ${drawTransectAutoRange.max.toFixed(3)}. Turn this off to use Min/Max below.`
+                          : "Finish drawing a transect to enable automatic draw-range scaling."}
+                      </div>
+                    </>
+                  ) : null}
+
+                  <div style={{ display: "flex", gap: 10 }}>
+                    <label style={{ flex: 1 }}>
+                      Min
+                      <div style={{ display: "flex", alignItems: "stretch", gap: 8 }}>
+                        <input
+                          type="text"
+                          inputMode="decimal"
+                          value={drawDisplayedColorInput?.min ?? colorInputs?.min ?? String(settings.cmin)}
+                          disabled={drawAutoColorRangeActive}
+                          onInput={(e) => updateColorInputLive("min", (e.target as HTMLInputElement).value)}
+                          onBlur={() => commitColorInput("min")}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") commitColorInput("min");
+                          }}
+                          style={{ flex: 1 }}
+                        />
+                        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                          <button
+                            type="button"
+                            className="tab"
+                            style={{ minWidth: 28, padding: "2px 8px", lineHeight: 1, fontWeight: 700 }}
+                            disabled={drawAutoColorRangeActive}
+                            onClick={() => nudgeColorScaleBound("min", 1)}
+                            aria-label="Increase minimum"
+                            title="Increase"
+                          >
+                            ^
+                          </button>
+                          <button
+                            type="button"
+                            className="tab"
+                            style={{ minWidth: 28, padding: "2px 8px", lineHeight: 1, fontWeight: 700 }}
+                            disabled={drawAutoColorRangeActive}
+                            onClick={() => nudgeColorScaleBound("min", -1)}
+                            aria-label="Decrease minimum"
+                            title="Decrease"
+                          >
+                            v
+                          </button>
+                        </div>
+                      </div>
+                    </label>
+                    <label style={{ flex: 1 }}>
+                      Max
+                      <div style={{ display: "flex", alignItems: "stretch", gap: 8 }}>
+                        <input
+                          type="text"
+                          inputMode="decimal"
+                          value={drawDisplayedColorInput?.max ?? colorInputs?.max ?? String(settings.cmax)}
+                          disabled={drawAutoColorRangeActive}
+                          onInput={(e) => updateColorInputLive("max", (e.target as HTMLInputElement).value)}
+                          onBlur={() => commitColorInput("max")}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") commitColorInput("max");
+                          }}
+                          style={{ flex: 1 }}
+                        />
+                        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                          <button
+                            type="button"
+                            className="tab"
+                            style={{ minWidth: 28, padding: "2px 8px", lineHeight: 1, fontWeight: 700 }}
+                            disabled={drawAutoColorRangeActive}
+                            onClick={() => nudgeColorScaleBound("max", 1)}
+                            aria-label="Increase maximum"
+                            title="Increase"
+                          >
+                            ^
+                          </button>
+                          <button
+                            type="button"
+                            className="tab"
+                            style={{ minWidth: 28, padding: "2px 8px", lineHeight: 1, fontWeight: 700 }}
+                            disabled={drawAutoColorRangeActive}
+                            onClick={() => nudgeColorScaleBound("max", -1)}
+                            aria-label="Decrease maximum"
+                            title="Decrease"
+                          >
+                            v
+                          </button>
+                        </div>
+                      </div>
+                    </label>
+                  </div>
+
+                  <div style={{ display: "flex", gap: 10 }}>
+                    <button type="button" className="tab" onClick={resetColorScale} style={{ flex: 1 }}>
+                      Reset default
+                    </button>
                     <button
                       type="button"
                       className="tab"
-                      onClick={() => {
-                        setShowGsrMask(false);
-                        setShowGreenlandSeaMask(false);
-                        setShowIcelandSeaMask(false);
-                        setShowNorwegianSeaMask(false);
-                      }}
+                      onClick={autoColorScaleFromFrame}
+                      style={{ flex: 1 }}
+                      disabled={sliceStatus !== "ready"}
+                      title={sliceStatus !== "ready" ? "Load a slice first" : "Auto range from current frame"}
                     >
-                      Show all basins
+                      Auto (frame)
                     </button>
+                  </div>
+
+                  <div style={{ display: "flex", gap: 10 }}>
+                    <label style={{ flex: 1 }}>
+                      Ticks
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <button
+                          type="button"
+                          className="tab"
+                          style={{ minWidth: 28, padding: "2px 8px", lineHeight: 1, fontWeight: 700 }}
+                          disabled={safeTickCountIndex <= 0}
+                          onClick={() => nudgeTickCount(-1)}
+                          aria-label="Previous tick count"
+                          title="Previous"
+                        >
+                          &lt;
+                        </button>
+                        <select
+                          value={String(settings.tickCount)}
+                          onChange={(e) =>
+                            setColorSettings((prev) => ({
+                              ...prev,
+                              [varId]: { ...prev[varId], tickCount: Number(e.target.value) },
+                            }))
+                          }
+                          style={{ flex: 1 }}
+                        >
+                          <option value="0">Auto</option>
+                          {TICK_OPTIONS_BY_VAR[varId].map((count) => (
+                            <option key={count} value={String(count)}>
+                              {count}
+                            </option>
+                          ))}
+                        </select>
+                        <button
+                          type="button"
+                          className="tab"
+                          style={{ minWidth: 28, padding: "2px 8px", lineHeight: 1, fontWeight: 700 }}
+                          disabled={safeTickCountIndex >= tickCountOptions.length - 1}
+                          onClick={() => nudgeTickCount(1)}
+                          aria-label="Next tick count"
+                          title="Next"
+                        >
+                          &gt;
+                        </button>
+                      </div>
+                    </label>
+
+                    <label style={{ flex: 1 }}>
+                      Mode
+                      <select
+                        value={settings.mode}
+                        onChange={(e) =>
+                          setColorSettings((prev) => ({
+                            ...prev,
+                            [varId]: { ...prev[varId], mode: e.target.value as ColorscaleMode },
+                          }))
+                        }
+                      >
+                        <option value="continuous">Continuous</option>
+                        <option value="discrete">Discrete</option>
+                      </select>
+                    </label>
+                  </div>
+
+                  {settings.mode === "discrete" ? (
+                    <label>
+                      Levels
+                      <select
+                        value={String(settings.levels)}
+                        onChange={(e) =>
+                          setColorSettings((prev) => ({
+                            ...prev,
+                            [varId]: { ...prev[varId], levels: Number(e.target.value) },
+                          }))
+                        }
+                      >
+                        <option value="8">8</option>
+                        <option value="12">12</option>
+                        <option value="16">16</option>
+                        <option value="24">24</option>
+                        <option value="32">32</option>
+                      </select>
+                    </label>
                   ) : null}
+
+                  <div className="hint">
+                    Default: <b>[{DEFAULT_COLOR_SETTINGS[varId].cmin}, {DEFAULT_COLOR_SETTINGS[varId].cmax}]</b>
+                  </div>
+
+                  <div className="sectionSubheadRow">
+                    <span className="sectionGlyph sectionGlyphTempo" aria-hidden>◷</span>
+                    <div className="sectionSubhead">Tempo-spatial</div>
+                  </div>
                   <div className="toggleRow">
                     <div>Movie</div>
                     <ToggleSwitch
@@ -2907,14 +3661,15 @@ export default function App() {
 
                   <label>
                     Time ({activeTimeLabel})
-                    <input
-                      type="range"
+                    <RangeNudgeSlider
                       min={0}
                       max={Math.max(0, timeList.length - 1)}
                       value={safeTimeIdx}
-                      onChange={(e) => setTimeIdx(Number(e.target.value))}
-                      style={{ width: "100%" }}
+                      onChange={setTimeIdx}
                       disabled={metaStatus !== "ready" || !timeList.length}
+                      buttonLayout="horizontal"
+                      decreaseLabel="<"
+                      increaseLabel=">"
                     />
                     {timeList.length ? (
                       <div
@@ -2941,12 +3696,7 @@ export default function App() {
                       <option value="4">4</option>
                     </select>
                   </label>
-                </div>
-              </details>
 
-              <details className="section" open>
-                <summary>Slice</summary>
-                <div className="sectionBody">
                   {viewMode === "horizontal" || viewMode === "draw" ? (
                     <>
                       <label>
@@ -3019,66 +3769,7 @@ export default function App() {
                             </div>
                           ) : null}
                         </>
-                      ) : null}
-                    </>
-                  ) : viewMode === "eddies" ? (
-                    <>
-                      <label>
-                        Detection depth ({eddyDetectionDepthLabel})
-                      <div className="hint">
-                        Eddy footprints are identified from {range.title.toLowerCase()} anomalies at the nearest
-                        model level to 1000 m, then only the largest eddy in the configured domain is retained and
-                        extended through the 3D field at the current time.
-                      </div>
-                      </label>
-                      <label>
-                        Eddy threshold (|anomaly|)
-                        <input
-                          type="text"
-                          inputMode="decimal"
-                          value={eddyThresholdInputByVar[varId] ?? String(eddyThreshold)}
-                          onInput={(e) =>
-                            updateEddyThresholdInputLive((e.target as HTMLInputElement).value)
-                          }
-                          onBlur={commitEddyThresholdInput}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") commitEddyThresholdInput();
-                          }}
-                        />
-                        <div className="hint">Higher values keep only stronger eddies.</div>
-                      </label>
-                      <label>
-                        Track length (frames) ({eddyTrackHistory})
-                        <RangeNudgeSlider
-                          min={1}
-                          max={eddyTrackHistoryMax}
-                          step={1}
-                          value={Math.min(eddyTrackHistory, eddyTrackHistoryMax)}
-                          onChange={setEddyTrackLength}
-                          disabled={metaStatus !== "ready" || !timeList.length}
-                        />
-                      </label>
-                      <label>
-                        Minimum eddy size (cells) ({eddyMinCellCount})
-                        <RangeNudgeSlider
-                          min={6}
-                          max={120}
-                          step={2}
-                          value={eddyMinCellCount}
-                          onChange={setEddyMinCells}
-                        />
-                        <div className="hint">Removes tiny noisy features.</div>
-                      </label>
-                      <div className="hint" style={{ marginTop: 6 }}>
-                        Domain largest eddy: {eddyDetection?.clusters.length ? "found" : "none"} at threshold{" "}
-                        {Number.isFinite(Number(eddyDetection?.threshold))
-                          ? Number(eddyDetection?.threshold).toFixed(varId === "T" ? 2 : 3)
-                          : "n/a"}.
-                      </div>
-                      <div className="hint">
-                        Domain bounds: lon {BOREAS_BASIN_BOUNDS.lonMin} to {BOREAS_BASIN_BOUNDS.lonMax}°, lat{" "}
-                        {BOREAS_BASIN_BOUNDS.latMin} to {BOREAS_BASIN_BOUNDS.latMax}°N.
-                      </div>
+                          ) : null}
                     </>
                   ) : viewMode === "transect" ? (
                     <label>
@@ -3103,7 +3794,7 @@ export default function App() {
                         <span>{latMin.toFixed(1)}°N</span>
                         <span>{latMax.toFixed(1)}°N</span>
                       </div>
-                      <div style={{ marginTop: 8 }}>
+                      <div style={{ display: "flex", alignItems: "stretch", gap: 8, marginTop: 8 }}>
                         <input
                           type="number"
                           value={latTargetInput}
@@ -3116,14 +3807,107 @@ export default function App() {
                             if (e.key === "Enter") commitLatTargetInput();
                           }}
                           disabled={metaStatus !== "ready"}
+                          style={{ flex: 1 }}
                         />
+                        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                          <button
+                            type="button"
+                            className="tab"
+                            style={{ minWidth: 28, padding: "2px 8px", lineHeight: 1, fontWeight: 700 }}
+                            disabled={metaStatus !== "ready" || latTarget >= latMax}
+                            onClick={() => {
+                              const next = nudgeRangeValue(
+                                latTarget,
+                                1,
+                                latMin,
+                                latMax,
+                                TRANSECT_SLICE_STEP_DEG
+                              );
+                              setLatTarget(next);
+                              setLatTargetInput(String(Number(next.toFixed(3))));
+                            }}
+                            aria-label="Increase latitude target"
+                            title="Increase"
+                          >
+                            ^
+                          </button>
+                          <button
+                            type="button"
+                            className="tab"
+                            style={{ minWidth: 28, padding: "2px 8px", lineHeight: 1, fontWeight: 700 }}
+                            disabled={metaStatus !== "ready" || latTarget <= latMin}
+                            onClick={() => {
+                              const next = nudgeRangeValue(
+                                latTarget,
+                                -1,
+                                latMin,
+                                latMax,
+                                TRANSECT_SLICE_STEP_DEG
+                              );
+                              setLatTarget(next);
+                              setLatTargetInput(String(Number(next.toFixed(3))));
+                            }}
+                            aria-label="Decrease latitude target"
+                            title="Decrease"
+                          >
+                            v
+                          </button>
+                        </div>
                       </div>
                       {transectLatActual != null ? (
                         <div className="hint">Nearest model latitude: {transectLatActual.toFixed(3)}°N</div>
                       ) : null}
                     </label>
-                  ) : (
+                  ) : null}
+                  <div className="sectionSubheadRow">
+                    <span className="sectionGlyph sectionGlyphMask" aria-hidden>◍</span>
+                    <div className="sectionSubhead">Masks</div>
+                  </div>
+                  <div className="toggleGrid2">
+                    <div className="toggleRow">
+                      <div>North Atlantic</div>
+                      <ToggleSwitch checked={showGsrMask} onCheckedChange={setShowGsrMask} />
+                    </div>
+                    <div className="toggleRow">
+                      <div>Greenland Sea</div>
+                      <ToggleSwitch checked={showGreenlandSeaMask} onCheckedChange={setShowGreenlandSeaMask} />
+                    </div>
+                    <div className="toggleRow">
+                      <div>Iceland Sea</div>
+                      <ToggleSwitch checked={showIcelandSeaMask} onCheckedChange={setShowIcelandSeaMask} />
+                    </div>
+                    <div className="toggleRow">
+                      <div>Norwegian Sea</div>
+                      <ToggleSwitch checked={showNorwegianSeaMask} onCheckedChange={setShowNorwegianSeaMask} />
+                    </div>
+                  </div>
+                  <div className="hint">Turn on a mask to hide that subdomain; none selected = full domain.</div>
+                  {allSubdomainMasksEnabled ? (
+                    <div className="hint" style={{ color: "rgba(255,196,120,0.96)" }}>
+                      All four masks are on, so Temperature/Salinity are hidden everywhere.
+                    </div>
+                  ) : null}
+                  {anySubdomainMaskEnabled ? (
+                    <button
+                      type="button"
+                      className="tab"
+                      onClick={() => {
+                        setShowGsrMask(false);
+                        setShowGreenlandSeaMask(false);
+                        setShowIcelandSeaMask(false);
+                        setShowNorwegianSeaMask(false);
+                      }}
+                    >
+                      Show all basins
+                    </button>
+                  ) : null}
+
+                  {viewMode === "class" ? (
                     <>
+                      <div className="sectionSubheadRow">
+                        <span className="sectionGlyph sectionGlyphClass" aria-hidden>⌗</span>
+                        <div className="sectionSubhead">Class settings</div>
+                      </div>
                       <label>
                         Class min
                         <input
@@ -3224,271 +4008,62 @@ export default function App() {
                         Reset class defaults
                       </button>
                     </>
-                  )}
-
-                  <label>
-                    Depth ratio (z) ({depthRatio.toFixed(2)})
-                    <RangeNudgeSlider
-                      min={0.15}
-                      max={1.5}
-                      step={0.05}
-                      value={depthRatio}
-                      onChange={setDepthRatio}
-                    />
-                    <div className="hint">Vertical exaggeration.</div>
-                  </label>
-
-                  <label>
-                    Depth scaling
-                    <select value={depthWarpMode} onChange={(e) => setDepthWarpMode(e.target.value as any)}>
-                      <option value="upper">Upper-focus (e.g., top 2500 m)</option>
-                      <option value="linear">Linear</option>
-                    </select>
-                  </label>
-
-                  {depthWarpMode === "upper" ? (
-                    <>
-                      <label>
-                        Focus depth (m) ({Math.round(depthFocusM)} m)
-                        <RangeNudgeSlider
-                          min={500}
-                          max={6000}
-                          step={100}
-                          value={depthFocusM}
-                          onChange={setDepthFocusM}
-                        />
-                        <div className="hint">Upper layer stays linear; deeper layers are compressed.</div>
-                      </label>
-                      <label>
-                        Deep ratio ({deepRatio.toFixed(2)})
-                        <RangeNudgeSlider
-                          min={0.05}
-                          max={1}
-                          step={0.05}
-                          value={deepRatio}
-                          onChange={setDeepRatio}
-                        />
-                        <div className="hint">Lower compresses deep ocean (below focus depth).</div>
-                      </label>
-                    </>
                   ) : null}
-
                 </div>
               </details>
 
-              <details className="section">
-                <summary>Color scale</summary>
+              <details className="section" open>
+                <summary>Data Snapshot</summary>
                 <div className="sectionBody">
-                  {viewMode === "eddies" ? (
-                    <div className="hint">
-                      Eddy mode uses fixed warm/cold anomaly colors. Variable choice still controls the detector.
-                    </div>
-                  ) : null}
-                  <label>
-                    {varId === "T" ? "Temperature colormap" : "Salinity colormap"}
-                    <select
-                      value={fieldColormapByVar[varId]}
-                      onChange={(e) =>
-                        setFieldColormapByVar((prev) => ({
-                          ...prev,
-                          [varId]: e.target.value as FieldColormapId,
-                        }))
-                      }
-                    >
-                      {FIELD_COLORMAP_OPTIONS.map((opt) => (
-                        <option key={opt.id} value={opt.id}>
-                          {opt.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-
-                  <label>
-                    Bathymetry colormap
-                    <select
-                      value={bathyColormap}
-                      onChange={(e) => setBathyColormap(e.target.value as BathyColormapId)}
-                    >
-                      {BATHY_COLORMAP_OPTIONS.map((opt) => (
-                        <option key={opt.id} value={opt.id}>
-                          {opt.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-
-                  {viewMode === "draw" ? (
-                    <>
-                      <label
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 8,
-                          justifyContent: "space-between",
-                        }}
-                      >
-                        <span>Auto range from transect</span>
-                        <ToggleSwitch
-                          checked={drawAutoColorRangeByVar[varId]}
-                          onCheckedChange={(checked) => setDrawAutoColorRangeEnabled(checked)}
-                        />
-                      </label>
-                      <div className="hint">
-                        {drawTransectAutoRange
-                          ? `Current transect range: ${drawTransectAutoRange.min.toFixed(3)} to ${drawTransectAutoRange.max.toFixed(3)}. Turn this off to use Min/Max below.`
-                          : "Finish drawing a transect to enable automatic draw-range scaling."}
+                  <div className="infoGrid">
+                    <div className="infoCard">
+                      <div className="infoLabel">Dataset</div>
+                      <div className="infoValue">
+                        {meta?.storeUrl ? meta.storeUrl.split("/").slice(-1)[0] : "public/data/nordic.zarr"}
                       </div>
-                    </>
-                  ) : null}
-
-                  <div style={{ display: "flex", gap: 10 }}>
-                    <label style={{ flex: 1 }}>
-                      Min
-                      <input
-                        type="text"
-                        inputMode="decimal"
-                        value={drawDisplayedColorInput?.min ?? colorInputs?.min ?? String(settings.cmin)}
-                        disabled={drawAutoColorRangeActive}
-                        onInput={(e) => updateColorInputLive("min", (e.target as HTMLInputElement).value)}
-                        onBlur={() => commitColorInput("min")}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") commitColorInput("min");
-                        }}
-                      />
-                    </label>
-                    <label style={{ flex: 1 }}>
-                      Max
-                      <input
-                        type="text"
-                        inputMode="decimal"
-                        value={drawDisplayedColorInput?.max ?? colorInputs?.max ?? String(settings.cmax)}
-                        disabled={drawAutoColorRangeActive}
-                        onInput={(e) => updateColorInputLive("max", (e.target as HTMLInputElement).value)}
-                        onBlur={() => commitColorInput("max")}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") commitColorInput("max");
-                        }}
-                      />
-                    </label>
-                  </div>
-
-                  <div style={{ display: "flex", gap: 10 }}>
-                    <button type="button" className="tab" onClick={resetColorScale} style={{ flex: 1 }}>
-                      Reset default
-                    </button>
-                    <button
-                      type="button"
-                      className="tab"
-                      onClick={autoColorScaleFromFrame}
-                      style={{ flex: 1 }}
-                      disabled={sliceStatus !== "ready"}
-                      title={sliceStatus !== "ready" ? "Load a slice first" : "Auto range from current frame"}
-                    >
-                      Auto (frame)
-                    </button>
-                  </div>
-
-                  <div style={{ display: "flex", gap: 10 }}>
-                    <label style={{ flex: 1 }}>
-                      Ticks
-                      <select
-                        value={String(settings.tickCount)}
-                        onChange={(e) =>
-                          setColorSettings((prev) => ({
-                            ...prev,
-                            [varId]: { ...prev[varId], tickCount: Number(e.target.value) },
-                          }))
-                        }
-                      >
-                        <option value="0">Auto</option>
-                        {TICK_OPTIONS_BY_VAR[varId].map((count) => (
-                          <option key={count} value={String(count)}>
-                            {count}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-
-                    <label style={{ flex: 1 }}>
-                      Mode
-                      <select
-                        value={settings.mode}
-                        onChange={(e) =>
-                          setColorSettings((prev) => ({
-                            ...prev,
-                            [varId]: { ...prev[varId], mode: e.target.value as ColorscaleMode },
-                          }))
-                        }
-                      >
-                        <option value="continuous">Continuous</option>
-                        <option value="discrete">Discrete</option>
-                      </select>
-                    </label>
-                  </div>
-
-                  {settings.mode === "discrete" ? (
-                    <label>
-                      Levels
-                      <select
-                        value={String(settings.levels)}
-                        onChange={(e) =>
-                          setColorSettings((prev) => ({
-                            ...prev,
-                            [varId]: { ...prev[varId], levels: Number(e.target.value) },
-                          }))
-                        }
-                      >
-                        <option value="8">8</option>
-                        <option value="12">12</option>
-                        <option value="16">16</option>
-                        <option value="24">24</option>
-                        <option value="32">32</option>
-                      </select>
-                    </label>
-                  ) : null}
-
-                  <div className="hint">
-                    Default: <b>[{DEFAULT_COLOR_SETTINGS[varId].cmin}, {DEFAULT_COLOR_SETTINGS[varId].cmax}]</b>
-                  </div>
-                </div>
-              </details>
-
-              <details className="section">
-                <summary>Status</summary>
-                <div className="sectionBody">
-                  <div className="hint">
-                    Dataset: <b>{meta?.storeUrl ? meta.storeUrl.split("/").slice(-1)[0] : "public/data/nordic.zarr"}</b> — meta{" "}
-                    <b>{metaStatus}</b>
-                    {metaStatus === "failed" && metaError ? <div style={{ marginTop: 6 }}>Error: {metaError}</div> : null}
-                  </div>
-
-                  <div className="hint">
-                    Slice: <b>{sliceStatus}</b>
-                    {sliceStatus === "failed" && sliceError ? <div style={{ marginTop: 6 }}>Error: {sliceError}</div> : null}
-                  </div>
-                  {viewMode === "draw" ? (
-                    <div className="hint">
-                      Draw transect: <b>{drawTransectPoints.length >= 2 ? `${drawTransectLengthKm.toFixed(0)} km ready` : drawTransectArmed ? "awaiting clicks" : "no line"}</b>
+                      <div className="infoMeta">Meta {metaStatus}</div>
                     </div>
-                  ) : null}
-                  <div className="hint">
-                    Class: <b>{viewMode === "class" ? classStatus : "off"}</b>
-                    {classStatus === "failed" && classError ? <div style={{ marginTop: 6 }}>Error: {classError}</div> : null}
-                  </div>
-                  <div className="hint">
-                    Eddies: <b>{viewMode === "eddies" ? eddyStatus : "off"}</b>
-                    {eddyStatus === "failed" && eddyError ? <div style={{ marginTop: 6 }}>Error: {eddyError}</div> : null}
+                    <div className="infoCard">
+                      <div className="infoLabel">3D runtime</div>
+                      <div className="infoValue">{effectiveRenderer3d}: {bathyInfo.plotly}</div>
+                      <div className="infoMeta">Bathy {bathyInfo.bathy}</div>
+                    </div>
+                    <div className="infoCard">
+                      <div className="infoLabel">Slice</div>
+                      <div className="infoValue">{sliceStatus}</div>
+                      <div className="infoMeta">
+                        {viewMode === "draw"
+                          ? drawTransectPoints.length >= 2
+                            ? `${drawTransectLengthKm.toFixed(0)} km line`
+                            : drawTransectArmed
+                              ? "awaiting clicks"
+                              : "no line"
+                          : activeDepthLabel}
+                      </div>
+                    </div>
+                    <div className="infoCard">
+                      <div className="infoLabel">Overlays</div>
+                      <div className="infoValue">
+                        {showWind ? `Wind ${windStatus}` : showSeaIce ? `Ice ${seaIceStatus}` : "No extra layer"}
+                      </div>
+                      <div className="infoMeta">
+                        Horizontal {bathyInfo.horizontalImage}, transect {bathyInfo.transectImage}
+                      </div>
+                    </div>
                   </div>
 
-                  <div className="hint">
-                    Sea ice: <b>{showSeaIce ? seaIceStatus : "off"}</b>
-                    {seaIceStatus === "failed" && seaIceError ? <div style={{ marginTop: 6 }}>Error: {seaIceError}</div> : null}
+                  <div className="sectionSubheadRow">
+                    <span className="sectionGlyph sectionGlyphData" aria-hidden>◨</span>
+                    <div className="sectionSubhead">Data and coverage</div>
                   </div>
+                  <div className="hint">Time coverage: <b>{timeCoverageLabel}</b></div>
+                  <div className="hint">Vertical range: <b>{depthCoverageLabel}</b> across <b>{zList.length || 0}</b> levels.</div>
+                  <div className="hint">Domain: <b>{domainLabel}</b></div>
                   <div className="hint">
-                    Masked subdomains:{" "}
+                    Masks:{" "}
                     <b>
                       {[
-                        showGsrMask ? "GSR" : null,
+                        showGsrMask ? "North Atlantic" : null,
                         showGreenlandSeaMask ? "Greenland Sea" : null,
                         showIcelandSeaMask ? "Iceland Sea" : null,
                         showNorwegianSeaMask ? "Norwegian Sea" : null,
@@ -3498,14 +4073,19 @@ export default function App() {
                     </b>
                   </div>
 
-                  <div className="hint">
-                    Wind stress on ocean: <b>{showWind ? windStatus : "off"}</b>
-                    {windStatus === "failed" && windError ? <div style={{ marginTop: 6 }}>Error: {windError}</div> : null}
+                  <div className="sectionSubheadRow">
+                    <span className="sectionGlyph sectionGlyphErr" aria-hidden>!</span>
+                    <div className="sectionSubhead">Errors</div>
                   </div>
-
-                  <div className="hint">
-                    3D: Plotly <b>{bathyInfo.plotly}</b>, bathymetry <b>{bathyInfo.bathy}</b>.
-                  </div>
+                  {loadErrors.length ? (
+                    loadErrors.map((message) => (
+                      <div key={message} className="hint">
+                        {message}
+                      </div>
+                    ))
+                  ) : (
+                    <div className="hint">No current load errors.</div>
+                  )}
                 </div>
               </details>
 
@@ -3519,7 +4099,7 @@ export default function App() {
                       flexWrap: "wrap",
                     }}
                   >
-                    <div style={{ fontSize: 12, opacity: 0.75 }}>Feedback:</div>
+                    <div style={{ fontSize: 12, color: feedbackLabelColor }}>Feedback:</div>
                     <a
                       href="https://bve23zsu.github.io/"
                       target="_blank"
@@ -3529,10 +4109,10 @@ export default function App() {
                       style={{
                         display: "inline-flex",
                         alignItems: "center",
-                        color: "white",
+                        color: feedbackLinkColor,
                         textDecoration: "none",
                         fontSize: 12,
-                        opacity: 0.8,
+                        opacity: 0.9,
                       }}
                     >
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
@@ -3548,10 +4128,10 @@ export default function App() {
                       style={{
                         display: "inline-flex",
                         alignItems: "center",
-                        color: "white",
+                        color: feedbackLinkColor,
                         textDecoration: "none",
                         fontSize: 12,
-                        opacity: 0.8,
+                        opacity: 0.9,
                       }}
                     >
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
@@ -3568,10 +4148,10 @@ export default function App() {
                         display: "inline-flex",
                         alignItems: "center",
                         gap: 5,
-                        color: "white",
+                        color: feedbackLinkColor,
                         textDecoration: "none",
                         fontSize: 12,
-                        opacity: 0.8,
+                        opacity: 0.9,
                       }}
                     >
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">

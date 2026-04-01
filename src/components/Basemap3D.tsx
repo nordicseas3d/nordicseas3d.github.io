@@ -2,12 +2,12 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type { Layout, PlotData } from "plotly.js";
 import { withBase } from "../lib/paths";
 import { makeSyntheticGreenlandSeaBathy } from "../lib/syntheticBathy";
+import { bathyCandidates, loadBathyGridFromCandidates } from "../lib/bathyJson";
 import {
   deep_256,
   paletteToColorscale,
   rdylbu_r_256,
   rgbKey,
-  topo_256,
   type RGB,
 } from "../lib/colormap";
 import {
@@ -177,6 +177,14 @@ function makeColorbarConfig(opts: {
   tickvals?: number[];
   ticktext?: string[];
 }) {
+  const titleLower = opts.title.toLowerCase();
+  const tickformat = titleLower.includes("salinity")
+    ? ".1~f"
+    : titleLower.includes("topograph") || titleLower.includes("bed elevation")
+      ? ".0f"
+      : titleLower.includes("sea ice")
+        ? ".2~f"
+        : undefined;
   return {
     title: {
       text: opts.title,
@@ -185,6 +193,7 @@ function makeColorbarConfig(opts: {
     },
     ...(opts.tickvals ? { tickmode: "array", tickvals: opts.tickvals } : null),
     ...(opts.ticktext?.length ? { ticktext: opts.ticktext } : null),
+    ...(tickformat ? { tickformat } : null),
     ticks: "outside",
     tickfont: { size: 12 },
     thickness: 20,
@@ -195,6 +204,26 @@ function makeColorbarConfig(opts: {
     ...(Number.isFinite(opts.x) ? { x: opts.x } : null),
     ...(Number.isFinite(opts.y) ? { y: opts.y } : null),
   } as any;
+}
+
+function makeBathymetryTicks(min: number, max: number) {
+  if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min) return [];
+  const span = max - min;
+  const rawStep = Math.abs(span) / 4;
+  const exponent = Math.floor(Math.log10(Math.max(rawStep, 1e-9)));
+  const fraction = rawStep / 10 ** exponent;
+  const niceFraction = fraction <= 1.5 ? 1 : fraction <= 3 ? 2 : fraction <= 4.5 ? 2.5 : fraction <= 7 ? 5 : 10;
+  const step = niceFraction * 10 ** exponent;
+  const start = Math.ceil(min / step) * step;
+  const end = Math.floor(max / step) * step;
+  const ticks: number[] = [];
+  for (let v = start; v <= end + step * 0.25; v += step) {
+    ticks.push(Number(v.toFixed(6)));
+  }
+  if (ticks.length < 2) {
+    return [Number(min.toFixed(0)), Number(max.toFixed(0))].filter((v, i, arr) => arr.indexOf(v) === i);
+  }
+  return ticks;
 }
 
 function colorFromColorscale(
@@ -218,149 +247,94 @@ function colorFromColorscale(
   return picked;
 }
 
-function parsePossiblyNonStandardJson<T>(text: string): T {
-  try {
-    return JSON.parse(text) as T;
-  } catch {
-    // Some Python JSON exports contain bare NaN/Infinity tokens.
-    // Normalize those to null so the payload can still be read.
-    const normalized = text
-      .replace(/\bNaN\b/g, "null")
-      .replace(/\b-Infinity\b/g, "null")
-      .replace(/\bInfinity\b/g, "null");
-    return JSON.parse(normalized) as T;
-  }
-}
-
 async function tryLoadBathyJson(
-  bathySource?: "auto" | "bathy" | "rtopo_ds" | "rtopo"
+  bathySource?: "model" | "rtopo"
 ): Promise<BathyGrid | null> {
-  try {
-    const forceFull =
-      typeof window !== "undefined" &&
-      new URLSearchParams(window.location.search).get("bathy") === "rtopo";
+  const paths = bathyCandidates();
+  const effective = bathySource ?? "model";
+  const candidates =
+    effective === "rtopo"
+      ? [paths.rtopo, paths.legacyRTopo, paths.legacyRTopoDs, paths.model, paths.legacyNordic]
+      : [paths.model, paths.legacyNordic, paths.legacyGreenlandSea, paths.legacyBathy, paths.rtopo];
+  const json = await loadBathyGridFromCandidates(candidates);
+  if (!json) return null;
 
-    const paths = {
-      nordic: withBase("data/nordic.json"),
-      greenlandsea: withBase("data/greenlandsea.json"),
-      bathy: withBase("data/bathy.json"),
-      rtopoDs: withBase("data/bathy_RTopo_ds.json"),
-      rtopo: withBase("data/bathy_RTopo.json"),
-    } as const;
+  // Normalize z into a numeric 2D array.
+  const zNumeric: number[][] = json.z.map((row) => (Array.isArray(row) ? row.map((v) => Number(v)) : []));
 
-    const effective = forceFull ? "rtopo" : (bathySource ?? "auto");
-    const candidates = (() => {
-      if (effective === "bathy") return [paths.nordic, paths.greenlandsea, paths.bathy, paths.rtopoDs, paths.rtopo];
-      if (effective === "rtopo_ds") return [paths.nordic, paths.rtopoDs, paths.greenlandsea, paths.bathy, paths.rtopo];
-      if (effective === "rtopo") return [paths.nordic, paths.rtopo, paths.rtopoDs, paths.greenlandsea, paths.bathy];
-      return [paths.nordic, paths.greenlandsea, paths.bathy, paths.rtopoDs, paths.rtopo];
-    })();
-    let json: BathyGrid | null = null;
-    for (const url of candidates) {
-      // Avoid loading huge JSON by accident; prefer a downsampled file.
-      if (effective !== "rtopo" && url.endsWith("bathy_RTopo.json")) {
-        try {
-          const head = await fetch(url, { method: "HEAD" });
-          const len = Number(head.headers.get("Content-Length") ?? "0");
-          // ~30MB threshold: above this, parsing can freeze the tab on many machines.
-          if (Number.isFinite(len) && len > 30 * 1024 * 1024) {
-            // Skip; fall back to ds or bathy.json.
-            console.warn(
-              `Skipping ${url} (${Math.round(len / (1024 * 1024))} MB). ` +
-                `Create bathy_RTopo_ds.json for performance, or force with ?bathy=rtopo.`
-            );
-            continue;
-          }
-        } catch {
-          // ignore HEAD errors; try GET anyway
-        }
-      }
-      const r = await fetch(url, { cache: "no-store" });
-      if (!r.ok) continue;
-      json = parsePossiblyNonStandardJson<BathyGrid>(await r.text());
-      break;
+  // Determine sign convention robustly (avoid sampling bias: RTopo often has land in the top-left).
+  // Conventions we support:
+  // - ocean depth already negative (preferred): keep as-is
+  // - ocean depth positive-down (common): flip sign so Plotly shows a basin
+  // If both positive and negative exist, assume:
+  // - positive => land elevation (clamp to 0 to focus on ocean)
+  // - negative => ocean depth
+  let hasNeg = false;
+  let hasPos = false;
+  outer: for (let j = 0; j < zNumeric.length; j++) {
+    const row = zNumeric[j];
+    if (!Array.isArray(row)) continue;
+    for (let i = 0; i < row.length; i++) {
+      const v = Number((row as any)[i]);
+      if (!Number.isFinite(v) || v === 0) continue;
+      if (v < 0) hasNeg = true;
+      if (v > 0) hasPos = true;
+      if (hasNeg && hasPos) break outer;
     }
-    if (!json) return null;
-    if (!Array.isArray(json?.lon) || !Array.isArray(json?.lat) || !Array.isArray(json?.z)) {
-      return null;
-    }
-
-    // Normalize z into a numeric 2D array.
-    const zNumeric: number[][] = json.z.map((row) => (Array.isArray(row) ? row.map((v) => Number(v)) : []));
-
-    // Determine sign convention robustly (avoid sampling bias: RTopo often has land in the top-left).
-    // Conventions we support:
-    // - ocean depth already negative (preferred): keep as-is
-    // - ocean depth positive-down (common): flip sign so Plotly shows a basin
-    // If both positive and negative exist, assume:
-    // - positive => land elevation (clamp to 0 to focus on ocean)
-    // - negative => ocean depth
-    let hasNeg = false;
-    let hasPos = false;
-    outer: for (let j = 0; j < zNumeric.length; j++) {
-      const row = zNumeric[j];
-      if (!Array.isArray(row)) continue;
-      for (let i = 0; i < row.length; i++) {
-        const v = Number((row as any)[i]);
-        if (!Number.isFinite(v) || v === 0) continue;
-        if (v < 0) hasNeg = true;
-        if (v > 0) hasPos = true;
-        if (hasNeg && hasPos) break outer;
-      }
-    }
-
-    // If the grid has no negatives but has positives, treat it as "positive-down depth" and flip.
-    if (!hasNeg && hasPos) {
-      for (let j = 0; j < zNumeric.length; j++) {
-        const row = zNumeric[j];
-        for (let i = 0; i < row.length; i++) row[i] = -row[i];
-      }
-      hasNeg = true;
-      hasPos = false;
-    }
-
-    // Keep signed z for coloring (land positive, ocean negative). For geometry, clamp land to 0
-    // so the z-axis focuses on ocean depth.
-    const zRaw = zNumeric;
-    const zGeom = zRaw.map((row) => row.map((v) => (Number.isFinite(v) ? Math.min(0, v) : v)));
-    json.zRaw = zRaw;
-    json.z = zGeom;
-
-    // Plotly surface performance: keep grid under a manageable size.
-    // RTopo can be thousands x thousands; downsample deterministically.
-    const nLat = json.lat.length;
-    const nLon = json.lon.length;
-    const maxPoints = 250_000;
-    const nPoints = nLat * nLon;
-    if (nPoints > maxPoints && nLat > 0 && nLon > 0) {
-      const targetLat = Math.max(80, Math.floor(Math.sqrt((maxPoints * nLat) / nLon)));
-      const targetLon = Math.max(80, Math.floor(maxPoints / targetLat));
-      const strideLat = Math.max(1, Math.ceil(nLat / targetLat));
-      const strideLon = Math.max(1, Math.ceil(nLon / targetLon));
-
-      const latIdx: number[] = [];
-      for (let j = 0; j < nLat; j += strideLat) latIdx.push(j);
-      if (latIdx[latIdx.length - 1] !== nLat - 1) latIdx.push(nLat - 1);
-
-      const lonIdx: number[] = [];
-      for (let i = 0; i < nLon; i += strideLon) lonIdx.push(i);
-      if (lonIdx[lonIdx.length - 1] !== nLon - 1) lonIdx.push(nLon - 1);
-
-      const zRawDown = (json as any).zRaw
-        ? latIdx.map((j) => lonIdx.map((i) => Number((json as any).zRaw[j][i])))
-        : undefined;
-      json = {
-        lon: lonIdx.map((i) => Number(json!.lon[i])),
-        lat: latIdx.map((j) => Number(json!.lat[j])),
-        z: latIdx.map((j) => lonIdx.map((i) => Number((json!.z as any)[j][i]))),
-        zRaw: zRawDown,
-      };
-    }
-
-    return json;
-  } catch {
-    return null;
   }
+
+  // If the grid has no negatives but has positives, treat it as "positive-down depth" and flip.
+  if (!hasNeg && hasPos) {
+    for (let j = 0; j < zNumeric.length; j++) {
+      const row = zNumeric[j];
+      for (let i = 0; i < row.length; i++) row[i] = -row[i];
+    }
+    hasNeg = true;
+    hasPos = false;
+  }
+
+  // Keep signed z for coloring (land positive, ocean negative). For geometry, clamp land to 0
+  // so the z-axis focuses on ocean depth.
+  const zRaw = zNumeric;
+  const zGeom = zRaw.map((row) => row.map((v) => (Number.isFinite(v) ? Math.min(0, v) : v)));
+
+  // Plotly surface performance: keep grid under a manageable size.
+  // RTopo can be thousands x thousands; downsample deterministically.
+  const nLat = json.lat.length;
+  const nLon = json.lon.length;
+  const maxPoints = 250_000;
+  const nPoints = nLat * nLon;
+  if (nPoints > maxPoints && nLat > 0 && nLon > 0) {
+    const targetLat = Math.max(80, Math.floor(Math.sqrt((maxPoints * nLat) / nLon)));
+    const targetLon = Math.max(80, Math.floor(maxPoints / targetLat));
+    const strideLat = Math.max(1, Math.ceil(nLat / targetLat));
+    const strideLon = Math.max(1, Math.ceil(nLon / targetLon));
+
+    const latIdx: number[] = [];
+    for (let j = 0; j < nLat; j += strideLat) latIdx.push(j);
+    if (latIdx[latIdx.length - 1] !== nLat - 1) latIdx.push(nLat - 1);
+
+    const lonIdx: number[] = [];
+    for (let i = 0; i < nLon; i += strideLon) lonIdx.push(i);
+    if (lonIdx[lonIdx.length - 1] !== nLon - 1) lonIdx.push(nLon - 1);
+
+    const zRawDown = zRaw
+      ? latIdx.map((j) => lonIdx.map((i) => Number(zRaw[j][i])))
+      : undefined;
+    return {
+      lon: lonIdx.map((i) => Number(json.lon[i])),
+      lat: latIdx.map((j) => Number(json.lat[j])),
+      z: latIdx.map((j) => lonIdx.map((i) => Number(zGeom[j][i]))),
+      zRaw: zRawDown,
+    };
+  }
+
+  return {
+    lon: json.lon.map((v) => Number(v)),
+    lat: json.lat.map((v) => Number(v)),
+    z: zGeom,
+    zRaw,
+  };
 }
 
 const DEFAULT_SCENE_CAMERA = {
@@ -368,6 +342,7 @@ const DEFAULT_SCENE_CAMERA = {
   eye: { x: 0.12, y: -2.15, z: 0.62 },
 };
 
+const DEFAULT_VERTICAL_EXAGGERATION = 0.5;
 const SCENE_CAMERA_STORAGE_KEY = "gs_scene_camera_v1";
 const WIND_TRACE_COLOR_DEFAULT = "rgba(255,255,255,0.92)";
 const STABLE_SCENE_OVERLAY_Z_MAX_M = 110;
@@ -560,9 +535,19 @@ function extractSurfacePick(event: any): { lon: number; lat: number } | null {
 }
 
 export default function Basemap3D(props: {
-  bathySource?: "auto" | "bathy" | "rtopo_ds" | "rtopo";
+  bathySource?: "model" | "rtopo";
+  themeMode?: "day" | "night";
   bathyPalette?: RGB[];
   bathyOpacity?: number;
+  bathyColorbar?: {
+    enabled: boolean;
+    title?: string;
+    subtitle?: string;
+    tickvals?: number[];
+    len?: number;
+    x?: number;
+    y?: number;
+  };
   compactLayout?: boolean;
   depthRatio?: number;
   depthWarp?: {
@@ -602,6 +587,7 @@ export default function Basemap3D(props: {
   eddyLayer?: EddyLayer;
   onSurfacePick?: (pick: { lon: number; lat: number }) => void;
   onSurfaceHover?: (pick: { lon: number; lat: number } | null) => void;
+  viewerHint?: string;
   onStatusChange?: (status: {
     plotly: "loading" | "ready" | "failed";
     bathy: "loading" | "file" | "synthetic";
@@ -815,8 +801,6 @@ export default function Basemap3D(props: {
     () => (props.bathyPalette?.length ? props.bathyPalette : defaultBathyPalette),
     [defaultBathyPalette, props.bathyPalette]
   );
-  const topoPalette = useMemo<RGB[]>(() => topo_256(), []);
-  const topoColorscale = useMemo(() => paletteToColorscale(topoPalette), [topoPalette]);
 
   const depthWarp = useMemo(() => {
     const mode = props.depthWarp?.mode ?? "linear";
@@ -825,19 +809,27 @@ export default function Basemap3D(props: {
     return { mode, focusDepthM, deepRatio } as const;
   }, [props.depthWarp?.deepRatio, props.depthWarp?.focusDepthM, props.depthWarp?.mode]);
 
+  const verticalExaggeration = useMemo(() => {
+    const v = Number(props.depthRatio);
+    if (!Number.isFinite(v) || v <= 0) return DEFAULT_VERTICAL_EXAGGERATION;
+    return Math.max(0.05, Math.min(3, v));
+  }, [props.depthRatio]);
+
   const scaleZ = useCallback(
     (z: number) => {
       const v = Number(z);
       if (!Number.isFinite(v)) return v;
-      if (v >= 0) return v; // above or at sea level: leave as-is
-      if (depthWarp.mode === "linear") return v;
-
-      // Upper-focus: keep 0..-focusDepth linear, compress deeper part by deepRatio.
-      const depth = -v; // positive down
-      const focus = depthWarp.focusDepthM;
-      if (depth <= focus) return v;
-      const scaledDepth = focus + (depth - focus) * depthWarp.deepRatio;
-      return -scaledDepth;
+      let scaled = v;
+      if (v < 0 && depthWarp.mode !== "linear") {
+        // Upper-focus: keep 0..-focusDepth linear, compress deeper part by deepRatio.
+        const depth = -v; // positive down
+        const focus = depthWarp.focusDepthM;
+        if (depth > focus) {
+          const scaledDepth = focus + (depth - focus) * depthWarp.deepRatio;
+          scaled = -scaledDepth;
+        }
+      }
+      return scaled;
     },
     [depthWarp.deepRatio, depthWarp.focusDepthM, depthWarp.mode]
   );
@@ -1604,6 +1596,18 @@ export default function Basemap3D(props: {
 
     const showContours = Boolean(props.showBathyContours);
     const showFieldContours = Boolean(props.showFieldContours);
+    const showBathyScale = Boolean(props.bathyColorbar?.enabled);
+    const bathyColorbarTitle = props.bathyColorbar?.title ?? "Topography";
+    const bathyColorbarSubtitle = props.bathyColorbar?.subtitle ?? "";
+    const bathyColorbarTitleText = bathyColorbarSubtitle
+      ? `${bathyColorbarTitle}<br>${bathyColorbarSubtitle}`
+      : bathyColorbarTitle;
+    const bathyColorbarTicks = props.bathyColorbar?.tickvals?.length
+      ? props.bathyColorbar.tickvals.filter((v) => Number.isFinite(v))
+      : undefined;
+    const bathyColorbarLen = props.bathyColorbar?.len;
+    const bathyColorbarX = props.bathyColorbar?.x;
+    const bathyColorbarY = props.bathyColorbar?.y;
     const traces: Partial<PlotData>[] = [];
 
     if (showBathy && textureOnBathy) {
@@ -1654,34 +1658,14 @@ export default function Basemap3D(props: {
     } else if (showBathy) {
       const zRaw = bathy.zRaw;
       if (zRaw && zRaw.length === bathy.lat.length && zRaw[0]?.length === bathy.lon.length) {
-        const oceanLevels = [-4200, -3600, -3000, -2400, -1800, -1200, -600, -400, -200, -50]; // meters
-        const levels = [...oceanLevels].sort((a, b) => a - b);
-        const nBins = Math.max(1, levels.length - 1);
-        const denom = Math.max(1, nBins - 1);
-        const sampled = Array.from({ length: nBins }, (_, i) => {
-          const t = denom ? i / denom : 0;
-          const idx = Math.round(t * (activeBathyPalette.length - 1));
-          return activeBathyPalette[idx];
-        });
-        const toCss = (c: RGB) => `rgb(${c.r},${c.g},${c.b})`;
-        const oceanColorscale: Array<[number, string]> = [];
-        const cmin = levels[0];
-        const cmax = levels[levels.length - 1];
-        const span = Math.max(1e-9, cmax - cmin);
-        for (let i = 0; i < nBins; i++) {
-          const t0 = (levels[i] - cmin) / span;
-          const t1 = (levels[i + 1] - cmin) / span;
-          const color = toCss(sampled[i]);
-          oceanColorscale.push([t0, color], [t1, color]);
-        }
-        oceanColorscale[0][0] = 0;
-        oceanColorscale[oceanColorscale.length - 1][0] = 1;
+        const bathyColorscale = paletteToColorscale(activeBathyPalette);
 
         const zOcean: number[][] = new Array(bathy.lat.length);
         const zOceanPlot: number[][] = new Array(bathy.lat.length);
         const zLand: number[][] = new Array(bathy.lat.length);
         const cLand: number[][] = new Array(bathy.lat.length);
-        let landMax = 0;
+        let minRaw = Infinity;
+        let maxRaw = -Infinity;
         for (let j = 0; j < bathy.lat.length; j++) {
           const oceanRow: number[] = new Array(bathy.lon.length);
           const oceanPlotRow: number[] = new Array(bathy.lon.length);
@@ -1696,8 +1680,10 @@ export default function Basemap3D(props: {
               cRow[i] = Number.NaN;
               continue;
             }
+            minRaw = Math.min(minRaw, raw);
+            maxRaw = Math.max(maxRaw, raw);
             if (raw < 0) {
-              oceanRow[i] = Number(bathy.z[j][i]);
+              oceanRow[i] = raw;
               oceanPlotRow[i] = scaleZ(Number(bathy.z[j][i]));
               landRow[i] = Number.NaN;
               cRow[i] = Number.NaN;
@@ -1706,7 +1692,6 @@ export default function Basemap3D(props: {
               oceanPlotRow[i] = Number.NaN;
               landRow[i] = 0;
               cRow[i] = raw;
-              landMax = Math.max(landMax, raw);
             } else {
               oceanRow[i] = 0;
               oceanPlotRow[i] = scaleZ(0);
@@ -1719,6 +1704,11 @@ export default function Basemap3D(props: {
           zLand[j] = landRow;
           cLand[j] = cRow;
         }
+        const bathyCmin = Number.isFinite(minRaw) ? minRaw : -5000;
+        const bathyCmax = Number.isFinite(maxRaw) ? maxRaw : 0;
+        const effectiveBathyTicks = bathyColorbarTicks?.length
+          ? bathyColorbarTicks
+          : makeBathymetryTicks(bathyCmin, bathyCmax);
 
         traces.push({
           type: "surface",
@@ -1727,13 +1717,26 @@ export default function Basemap3D(props: {
           y: bathy.lat,
           z: zOceanPlot as any,
           surfacecolor: zOcean as any,
-          cmin,
-          cmax,
+          cmin: bathyCmin,
+          cmax: bathyCmax,
           cauto: false,
-          colorscale: oceanColorscale as any,
-          showscale: false,
-          lighting: { ambient: 0.85, diffuse: 0.35, specular: 0.05, roughness: 0.95 } as any,
-          flatshading: true as any,
+          colorscale: bathyColorscale as any,
+          showscale: showBathyScale,
+          ...(showBathyScale
+            ? {
+                colorbar: {
+                  ...makeColorbarConfig({
+                    title: bathyColorbarTitleText,
+                    tickvals: effectiveBathyTicks,
+                    len: bathyColorbarLen,
+                    x: bathyColorbarX,
+                    y: bathyColorbarY,
+                  }),
+                } as any,
+              }
+            : null),
+          lighting: { ambient: 0.9, diffuse: 0.42, specular: 0.04, roughness: 0.9 } as any,
+          flatshading: false as any,
           contours: {
             z: {
               show: showContours,
@@ -1748,7 +1751,7 @@ export default function Basemap3D(props: {
         });
 
         // Land as a sea-level "cap" with topo coloring.
-        if (landMax > 0) {
+        if (bathyCmax > 0) {
           traces.push({
             type: "surface",
             name: "Land (sea-level cap)",
@@ -1756,24 +1759,45 @@ export default function Basemap3D(props: {
             y: bathy.lat,
             z: zLand as any,
             surfacecolor: cLand as any,
-            cmin: 0,
-            cmax: landMax,
+            cmin: bathyCmin,
+            cmax: bathyCmax,
             cauto: false,
-            colorscale: topoColorscale as any,
+            colorscale: bathyColorscale as any,
             showscale: false,
-            lighting: { ambient: 0.95, diffuse: 0.2, specular: 0.0, roughness: 1.0 } as any,
-            flatshading: true as any,
+            lighting: { ambient: 0.97, diffuse: 0.18, specular: 0.0, roughness: 1.0 } as any,
+            flatshading: false as any,
             hoverinfo: "skip",
             opacity: bathyOpacity,
           });
         }
       } else {
+        let bathyCmin = Infinity;
+        let bathyCmax = -Infinity;
+        for (let j = 0; j < bathy.z.length; j++) {
+          const row = bathy.z[j];
+          if (!Array.isArray(row)) continue;
+          for (let i = 0; i < row.length; i++) {
+            const v = Number(row[i]);
+            if (!Number.isFinite(v)) continue;
+            bathyCmin = Math.min(bathyCmin, v);
+            bathyCmax = Math.max(bathyCmax, v);
+          }
+        }
+        if (!Number.isFinite(bathyCmin)) bathyCmin = -5000;
+        if (!Number.isFinite(bathyCmax)) bathyCmax = 0;
+        const effectiveBathyTicks = bathyColorbarTicks?.length
+          ? bathyColorbarTicks
+          : makeBathymetryTicks(bathyCmin, bathyCmax);
         traces.push({
           type: "surface",
           name: "Bathy",
           x: bathy.lon,
           y: bathy.lat,
           z: bathyZPlot,
+          surfacecolor: bathy.z as any,
+          cmin: bathyCmin,
+          cmax: bathyCmax,
+          cauto: false,
           colorscale: paletteToColorscale(activeBathyPalette) as any,
           lighting: {
             ambient: 0.8,
@@ -1791,7 +1815,20 @@ export default function Basemap3D(props: {
               project: { z: false },
             },
           } as any,
-          showscale: false,
+          showscale: showBathyScale,
+          ...(showBathyScale
+            ? {
+                colorbar: {
+                  ...makeColorbarConfig({
+                    title: bathyColorbarTitleText,
+                    tickvals: effectiveBathyTicks,
+                    len: bathyColorbarLen,
+                    x: bathyColorbarX,
+                    y: bathyColorbarY,
+                  }),
+                } as any,
+              }
+            : null),
           opacity: bathyOpacity,
         });
       }
@@ -2401,6 +2438,12 @@ export default function Basemap3D(props: {
     props.eddyLayer,
     activeBathyPalette,
     props.bathyOpacity,
+    props.bathyColorbar?.enabled,
+    props.bathyColorbar?.title,
+    props.bathyColorbar?.tickvals,
+    props.bathyColorbar?.len,
+    props.bathyColorbar?.x,
+    props.bathyColorbar?.y,
     props.showBathyContours,
     props.showFieldContours,
     scaleZ,
@@ -2500,24 +2543,20 @@ export default function Basemap3D(props: {
     scaleZ,
   ]);
 
-  const depthRatio = useMemo(() => {
-    const v = Number(props.depthRatio);
-    if (!Number.isFinite(v) || v <= 0) return 0.35;
-    return Math.max(0.05, Math.min(3, v));
-  }, [props.depthRatio]);
   const compactLayout = Boolean(props.compactLayout);
+  const isDayTheme = props.themeMode === "day";
   const layout = useMemo<Partial<Layout>>(
     () => ({
       margin: { l: 0, r: 0, t: 0, b: 0 },
-      paper_bgcolor: "rgba(0,0,0,0)",
+      paper_bgcolor: isDayTheme ? "rgba(242,248,255,0.02)" : "rgba(0,0,0,0)",
       showlegend: true,
       legend: {
         x: compactLayout ? 0.70 : 0.9,
         y: 0.98,
         xanchor: "left",
         yanchor: "top",
-        bgcolor: "rgba(8,16,32,0.58)",
-        bordercolor: "rgba(255,255,255,0.20)",
+        bgcolor: isDayTheme ? "rgba(255,255,255,0.70)" : "rgba(8,16,32,0.58)",
+        bordercolor: isDayTheme ? "rgba(37,99,235,0.18)" : "rgba(255,255,255,0.20)",
         borderwidth: 1,
         font: { size: compactLayout ? 12 : 15 },
       } as any,
@@ -2527,12 +2566,32 @@ export default function Basemap3D(props: {
         // Preserve 3D camera across updates while animating.
         uirevision: "keep",
         domain: compactLayout ? { x: [0, 1], y: [0, 1] } : { x: [0.24, 1], y: [0, 1] },
-        xaxis: { title: "Longitude", showgrid: false, zeroline: false, range: fixedRanges.x as any },
-        yaxis: { title: "Latitude", showgrid: false, zeroline: false, range: fixedRanges.y as any },
-        zaxis: {
-          title: "Depth (m)",
+        bgcolor: isDayTheme ? "rgba(255,255,255,0.02)" : "rgba(0,0,0,0)",
+        xaxis: {
+          title: "",
           showgrid: false,
           zeroline: false,
+          showbackground: false,
+          showticklabels: false,
+          showspikes: false,
+          range: fixedRanges.x as any,
+        },
+        yaxis: {
+          title: "",
+          showgrid: false,
+          zeroline: false,
+          showbackground: false,
+          showticklabels: false,
+          showspikes: false,
+          range: fixedRanges.y as any,
+        },
+        zaxis: {
+          title: "",
+          showgrid: false,
+          zeroline: false,
+          showbackground: false,
+          showticklabels: false,
+          showspikes: false,
           tickmode: "array",
           tickvals: zAxisTicks.tickvals as any,
           ticktext: zAxisTicks.ticktext as any,
@@ -2540,12 +2599,12 @@ export default function Basemap3D(props: {
         },
         dragmode: "orbit",
         aspectmode: "manual",
-        aspectratio: { x: 1.1, y: 1.0, z: depthRatio },
+        aspectratio: { x: 1.1, y: 1.0, z: DEFAULT_VERTICAL_EXAGGERATION },
       }
     }),
     [
+      isDayTheme,
       compactLayout,
-      depthRatio,
       fixedRanges.x,
       fixedRanges.y,
       fixedRanges.z,
@@ -2553,6 +2612,72 @@ export default function Basemap3D(props: {
       zAxisTicks.tickvals,
     ]
   );
+  const plotReactToken = useMemo(
+    () => ({}),
+    [
+      bathy,
+      horizontalColor,
+      props.horizontalField,
+      props.horizontalPlanes,
+      props.horizontalOverlay?.enabled,
+      props.horizontalOverlay?.showScale,
+      props.horizontalOverlay?.mode,
+      props.horizontalOverlay?.opacity,
+      props.showBathy,
+      props.guidePath,
+      props.transectField,
+      props.transectOverlay?.enabled,
+      props.transectOverlay?.opacity,
+      props.windLayer,
+      props.classLayer,
+      props.eddyLayer,
+      activeBathyPalette,
+      props.bathyOpacity,
+      props.bathyColorbar?.enabled,
+      props.bathyColorbar?.title,
+      props.bathyColorbar?.tickvals,
+      props.bathyColorbar?.len,
+      props.bathyColorbar?.x,
+      props.bathyColorbar?.y,
+      props.showBathyContours,
+      props.showFieldContours,
+      transectCurtain,
+      compactLayout,
+      fixedRanges.x[0],
+      fixedRanges.x[1],
+      fixedRanges.y[0],
+      fixedRanges.y[1],
+    ]
+  );
+  const [plotRenderData, setPlotRenderData] = useState<Partial<PlotData>[]>(() => data);
+  const [plotRenderLayout, setPlotRenderLayout] = useState<Partial<Layout>>(() => layout);
+  const zScaleSignature = useMemo(
+    () =>
+      JSON.stringify({
+        depthRatio: verticalExaggeration,
+        zRange: fixedRanges.z,
+        zTickvals: zAxisTicks.tickvals,
+        zTicktext: zAxisTicks.ticktext,
+      }),
+    [fixedRanges.z, verticalExaggeration, zAxisTicks.ticktext, zAxisTicks.tickvals]
+  );
+
+  useEffect(() => {
+    const currentCam =
+      lastKnownCameraRef.current ??
+      normalizeCamera(graphDivRef.current?.layout?.scene?.camera) ??
+      initialCameraRef.current ??
+      DEFAULT_SCENE_CAMERA;
+    setPlotRenderData(data);
+    const sceneWithCam = {
+      ...((layout as any).scene ?? {}),
+      camera: currentCam,
+    };
+    setPlotRenderLayout({
+      ...(layout as any),
+      scene: sceneWithCam as any,
+    });
+  }, [plotReactToken, data, layout]);
 
   const plotConfig = useMemo(
     () => ({
@@ -2600,7 +2725,7 @@ export default function Basemap3D(props: {
       if (changed) setGraphDivVersion((n) => n + 1);
     }
     const cam = normalizeCamera(graphDiv?.layout?.scene?.camera);
-    if (cam && !lastKnownCameraRef.current) lastKnownCameraRef.current = cam;
+    if (cam) lastKnownCameraRef.current = cam;
   }, []);
 
   useEffect(() => {
@@ -2785,7 +2910,6 @@ export default function Basemap3D(props: {
     };
   }, [
     compactLayout,
-    depthRatio,
     depthWarp.deepRatio,
     depthWarp.focusDepthM,
     depthWarp.mode,
@@ -2794,6 +2918,66 @@ export default function Basemap3D(props: {
     fixedRanges.y,
     fixedRanges.z,
   ]);
+
+  useEffect(() => {
+    const Plotly = plotlyLibRef.current;
+    const graphDiv = graphDivRef.current;
+    if (!Plotly || !graphDiv || !didInitCameraRef.current) return;
+    const liveCam = normalizeCamera(graphDiv?.layout?.scene?.camera);
+    if (liveCam) lastKnownCameraRef.current = liveCam;
+    const exaggerationFactor = verticalExaggeration / DEFAULT_VERTICAL_EXAGGERATION;
+    const scaleNestedZ = (input: any): any => {
+      if (Array.isArray(input)) return input.map((entry) => scaleNestedZ(entry));
+      const v = Number(input);
+      return Number.isFinite(v) ? v * exaggerationFactor : input;
+    };
+
+    const zTraceIndices: number[] = [];
+    const zTraceValues: any[] = [];
+    for (let i = 0; i < data.length; i++) {
+      const trace = data[i] as any;
+      if (!trace || trace.z == null) continue;
+      zTraceIndices.push(i);
+      zTraceValues.push(scaleNestedZ(trace.z));
+    }
+    const scaledZRange = fixedRanges.z.map((v) =>
+      Number.isFinite(Number(v)) ? Number(v) * exaggerationFactor : v
+    ) as [number, number];
+    const scaledZTickvals = zAxisTicks.tickvals.map((v) =>
+      Number.isFinite(Number(v)) ? Number(v) * exaggerationFactor : v
+    );
+
+    let raf = window.requestAnimationFrame(() => {
+      raf = 0;
+      try {
+        const jobs: Array<Promise<any>> = [];
+        if (zTraceIndices.length) {
+          jobs.push(Promise.resolve(Plotly.restyle(graphDiv, { z: zTraceValues as any }, zTraceIndices)));
+        }
+        jobs.push(
+          Promise.resolve(
+            Plotly.relayout(graphDiv, {
+              "scene.zaxis.range": scaledZRange as any,
+              "scene.zaxis.tickvals": scaledZTickvals as any,
+              "scene.zaxis.ticktext": zAxisTicks.ticktext as any,
+              "scene.camera":
+                lastKnownCameraRef.current ??
+                liveCam ??
+                normalizeCamera(graphDiv?.layout?.scene?.camera) ??
+                initialCameraRef.current ??
+                DEFAULT_SCENE_CAMERA,
+            })
+          )
+        );
+        void Promise.all(jobs);
+      } catch {
+        // ignore
+      }
+    });
+    return () => {
+      if (raf) window.cancelAnimationFrame(raf);
+    };
+  }, [data, fixedRanges.z, verticalExaggeration, zAxisTicks.ticktext, zAxisTicks.tickvals, zScaleSignature]);
 
   if (!Plot) {
     return (
@@ -2852,8 +3036,8 @@ export default function Basemap3D(props: {
   return (
     <div className="basemap">
       <Plot
-        data={data as PlotData[]}
-        layout={layout as Layout}
+        data={plotRenderData as PlotData[]}
+        layout={plotRenderLayout as Layout}
         config={plotConfig}
         onInitialized={handleInitialized}
         onUpdate={handleUpdate}
@@ -2865,6 +3049,7 @@ export default function Basemap3D(props: {
         style={{ width: "100%", height: "100%" }}
         useResizeHandler
       />
+      {props.viewerHint ? <div className="mapFooterHint">{props.viewerHint}</div> : null}
       <canvas
         ref={windCanvasRef}
         aria-hidden="true"

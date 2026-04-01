@@ -125,8 +125,10 @@ type BathyGrid = { lon: number[]; lat: number[] };
 
 async function loadBathyLonLat(): Promise<BathyGrid> {
   // Fallback only (used if lon/lat cannot be read from the Zarr store).
-  // Prefer nordic.json in this project; keep legacy names as fallback.
+  // Prefer the current model-grid topo file; keep legacy names as fallback.
   const candidates = [
+    withBase("data/nordic_model_grid_4.5-1km.json"),
+    withBase("data/RTopo_30arcsec.json"),
     withBase("data/nordic.json"),
     withBase("data/greenlandsea.json"),
     withBase("data/bathy.json"),

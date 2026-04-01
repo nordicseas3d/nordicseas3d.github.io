@@ -68,6 +68,16 @@ body[data-theme="day"] .badge{
   background: rgba(191,219,254,0.48);
 }
 
+body[data-theme="day"] .infoCard{
+  border-color: rgba(23,40,66,0.16);
+  background: rgba(255,255,255,0.48);
+}
+
+body[data-theme="day"] .infoLabel,
+body[data-theme="day"] .sectionSubhead{
+  color: rgba(25,43,68,0.56);
+}
+
 .app{
   position: relative;
   width: 100vw;
@@ -80,6 +90,56 @@ body[data-theme="day"] .badge{
   position: absolute;
   inset: 0;
   z-index: 0;
+}
+
+.viewerHint{
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  z-index: 3;
+  pointer-events: none;
+  padding: 6px 10px;
+  border-radius: 9px;
+  border: 1px solid rgba(255,255,255,0.24);
+  background: rgba(6,10,18,0.52);
+  color: rgba(232,243,255,0.86);
+  font-size: 11px;
+  letter-spacing: 0.01em;
+  backdrop-filter: blur(4px);
+}
+
+body[data-theme="day"] .viewerHint{
+  border-color: rgba(23,40,66,0.22);
+  background: rgba(245,250,255,0.72);
+  color: rgba(18,31,50,0.86);
+}
+
+.mapFooterHint{
+  position: absolute;
+  left: 50%;
+  bottom: 16px;
+  transform: translateX(-50%);
+  z-index: 3;
+  pointer-events: none;
+  padding: 7px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,0.20);
+  background: rgba(6,10,18,0.50);
+  color: rgba(255,255,255,0.92);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: 0.01em;
+  text-align: center;
+  max-width: min(74vw, 980px);
+  backdrop-filter: blur(4px);
+  text-shadow: 0 1px 2px rgba(0,0,0,0.75);
+}
+
+body[data-theme="day"] .mapFooterHint{
+  border-color: rgba(23,40,66,0.20);
+  background: rgba(245,250,255,0.78);
+  color: rgba(15,23,42,0.92);
 }
 
 .overlay{
@@ -148,6 +208,52 @@ body[data-theme="day"] .badge{
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.panelResizeHandle{
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  border-radius: 6px;
+  pointer-events: auto;
+  touch-action: none;
+  background:
+    linear-gradient(135deg, transparent 0 42%, rgba(15,23,42,0.34) 42% 46%, transparent 46% 100%),
+    linear-gradient(135deg, transparent 0 58%, rgba(15,23,42,0.22) 58% 62%, transparent 62% 100%);
+  opacity: 0.9;
+}
+
+.panelResizeHandleNW{
+  top: 6px;
+  left: 6px;
+  cursor: nwse-resize;
+  transform: rotate(180deg);
+}
+
+.panelResizeHandleNE{
+  top: 6px;
+  right: 6px;
+  cursor: nesw-resize;
+  transform: rotate(270deg);
+}
+
+.panelResizeHandleSW{
+  left: 6px;
+  bottom: 6px;
+  cursor: nesw-resize;
+  transform: rotate(90deg);
+}
+
+.panelResizeHandleSE{
+  right: 6px;
+  bottom: 6px;
+  cursor: nwse-resize;
+}
+
+body[data-theme="day"] .panelResizeHandle{
+  background:
+    linear-gradient(135deg, transparent 0 42%, rgba(37,99,235,0.42) 42% 46%, transparent 46% 100%),
+    linear-gradient(135deg, transparent 0 58%, rgba(37,99,235,0.28) 58% 62%, transparent 62% 100%);
 }
 
 .panelIconButton{
@@ -220,6 +326,14 @@ body[data-theme="day"] .badge{
   gap: 10px;
 }
 
+.sectionSubhead{
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255,255,255,0.5);
+}
+
 .tabs{
   display: flex;
   gap: 8px;
@@ -250,6 +364,12 @@ body[data-theme="day"] .badge{
   gap: 10px;
   font-size: 12px;
   color: var(--muted);
+}
+
+.toggleGrid2{
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
 }
 
 .toggle{
@@ -325,6 +445,42 @@ input[type="range"]{
   font-size: 12px;
   color: var(--muted);
   line-height: 1.35;
+}
+
+.infoGrid{
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.infoCard{
+  border: 1px solid rgba(255,255,255,0.08);
+  background: rgba(255,255,255,0.03);
+  border-radius: 12px;
+  padding: 10px 11px;
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.infoLabel{
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255,255,255,0.48);
+}
+
+.infoValue{
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.infoMeta{
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--muted);
 }
 
 .viewer{
@@ -418,6 +574,310 @@ input[type="range"]{
   background: rgba(103,232,249,0.12);
 }
 
+.iosSettingsPanel{
+  background: rgba(244, 245, 248, 0.94);
+  border: 1px solid rgba(15, 23, 42, 0.10);
+  box-shadow: 0 22px 54px rgba(2, 6, 23, 0.34);
+  backdrop-filter: saturate(175%) blur(18px);
+  color: #111827;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Helvetica Neue", Helvetica, Arial, sans-serif;
+}
+
+.iosSettingsPanel .panelHeader{
+  color: #0f172a;
+  padding: 2px 0 4px;
+}
+
+.iosSettingsPanel .panelHeader > div:first-child > div:first-child{
+  color: rgba(15, 23, 42, 0.62) !important;
+  font-weight: 600;
+}
+
+.iosSettingsPanel .panelIconButton{
+  border-color: rgba(15, 23, 42, 0.12);
+  background: rgba(255,255,255,0.86);
+  color: rgba(15, 23, 42, 0.86);
+}
+
+.iosSettingsPanel .title h1{
+  font-size: 31px;
+  line-height: 1.1;
+  letter-spacing: -0.03em;
+  color: #111827;
+  font-weight: 700;
+}
+
+.iosSettingsPanel .badge{
+  border-color: rgba(37, 99, 235, 0.24);
+  color: #1f2937;
+  background: rgba(191, 219, 254, 0.62);
+}
+
+.iosSettingsPanel .controls{
+  gap: 12px;
+}
+
+.iosSettingsPanel .section{
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.88);
+  padding: 0;
+  overflow: hidden;
+}
+
+.iosSettingsPanel .section > summary{
+  color: #111827;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  padding: 11px 14px;
+  background: rgba(248, 250, 252, 0.82);
+}
+
+.iosSettingsPanel .section > summary::after{
+  color: rgba(15, 23, 42, 0.46);
+}
+
+.iosSettingsPanel .sectionBody{
+  margin-top: 0;
+  padding: 10px 10px 12px;
+  gap: 8px;
+}
+
+.sectionSubheadRow{
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.sectionGlyph{
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.sectionGlyphMode{ background: linear-gradient(180deg, #3b82f6, #2563eb); }
+.sectionGlyphTopo{ background: linear-gradient(180deg, #34d399, #10b981); }
+.sectionGlyphVars{ background: linear-gradient(180deg, #f59e0b, #f97316); }
+.sectionGlyphColor{ background: linear-gradient(180deg, #c084fc, #a855f7); }
+.sectionGlyphTempo{ background: linear-gradient(180deg, #38bdf8, #0ea5e9); }
+.sectionGlyphMask{ background: linear-gradient(180deg, #94a3b8, #64748b); }
+.sectionGlyphClass{ background: linear-gradient(180deg, #ef4444, #dc2626); }
+.sectionGlyphData{ background: linear-gradient(180deg, #60a5fa, #2563eb); }
+.sectionGlyphErr{ background: linear-gradient(180deg, #fb7185, #f43f5e); }
+
+.iosSettingsPanel .sectionSubhead{
+  color: rgba(15, 23, 42, 0.58);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.iosSettingsPanel .tabs{
+  background: #e9edf3;
+  border-radius: 11px;
+  padding: 4px;
+  gap: 4px;
+}
+
+.iosSettingsPanel .tab{
+  border: 0;
+  background: transparent;
+  color: rgba(15, 23, 42, 0.74);
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 8px 9px;
+}
+
+.iosSettingsPanel .tabActive{
+  background: #ffffff;
+  color: #111827;
+  box-shadow: 0 1px 2px rgba(2, 6, 23, 0.12);
+}
+
+.iosSettingsPanel label,
+.iosSettingsPanel .toggleRow{
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  background: rgba(255, 255, 255, 0.92);
+  border-radius: 12px;
+  padding: 9px 11px;
+  color: #0f172a;
+  font-size: 13px;
+}
+
+.iosSettingsPanel label{
+  gap: 7px;
+}
+
+.iosSettingsPanel select,
+.iosSettingsPanel input[type="number"],
+.iosSettingsPanel input[type="text"]{
+  background: rgba(246, 248, 251, 0.96);
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  color: #0f172a;
+}
+
+.iosSettingsPanel .hint{
+  color: rgba(15, 23, 42, 0.60);
+  font-size: 12px;
+  padding: 0 4px;
+}
+
+.iosSettingsPanel .toggle{
+  border-color: rgba(15, 23, 42, 0.14);
+  background: rgba(15, 23, 42, 0.14);
+}
+
+.iosSettingsPanel .toggleGrid2 .toggleRow{
+  min-height: 46px;
+}
+
+.iosSettingsPanel .toggleGrid2 .toggleRow > div:first-child{
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.iosSettingsPanel .toggleOn{
+  background: #34c759;
+  border-color: rgba(52, 199, 89, 0.72);
+}
+
+.iosSettingsPanel .toggleKnob{
+  box-shadow: 0 1px 3px rgba(2, 6, 23, 0.25);
+}
+
+.iosSettingsPanel .infoCard{
+  border-color: rgba(15,23,42,0.08);
+  background: rgba(255,255,255,0.92);
+}
+
+.iosSettingsPanel .infoLabel{
+  color: rgba(15,23,42,0.52);
+}
+
+.iosSettingsPanel .infoValue{
+  color: #0f172a;
+}
+
+.iosSettingsPanel .infoMeta{
+  color: rgba(15,23,42,0.62);
+}
+
+body[data-theme="night"] .iosSettingsPanel{
+  background: rgba(13, 18, 30, 0.90);
+  border-color: rgba(148, 163, 184, 0.14);
+  box-shadow: 0 22px 54px rgba(0, 0, 0, 0.48);
+  color: rgba(241, 245, 249, 0.94);
+}
+
+body[data-theme="night"] .iosSettingsPanel .panelHeader{
+  color: rgba(241, 245, 249, 0.92);
+}
+
+body[data-theme="night"] .iosSettingsPanel .panelHeader > div:first-child > div:first-child{
+  color: rgba(226, 232, 240, 0.58) !important;
+}
+
+body[data-theme="night"] .iosSettingsPanel .panelIconButton{
+  border-color: rgba(148, 163, 184, 0.16);
+  background: rgba(255,255,255,0.06);
+  color: rgba(241,245,249,0.90);
+}
+
+body[data-theme="night"] .iosSettingsPanel .title h1{
+  color: rgba(248, 250, 252, 0.96);
+}
+
+body[data-theme="night"] .iosSettingsPanel .badge{
+  border-color: rgba(96, 165, 250, 0.24);
+  color: rgba(226, 232, 240, 0.96);
+  background: rgba(59, 130, 246, 0.16);
+}
+
+body[data-theme="night"] .iosSettingsPanel .section{
+  border-color: rgba(148, 163, 184, 0.10);
+  background: rgba(255,255,255,0.03);
+}
+
+body[data-theme="night"] .iosSettingsPanel .section > summary{
+  color: rgba(241,245,249,0.90);
+  background: rgba(255,255,255,0.03);
+}
+
+body[data-theme="night"] .iosSettingsPanel .section > summary::after{
+  color: rgba(226,232,240,0.52);
+}
+
+body[data-theme="night"] .iosSettingsPanel .sectionSubhead{
+  color: rgba(226,232,240,0.56);
+}
+
+body[data-theme="night"] .iosSettingsPanel .tabs{
+  background: rgba(255,255,255,0.06);
+}
+
+body[data-theme="night"] .iosSettingsPanel .tab{
+  color: rgba(226,232,240,0.82);
+}
+
+body[data-theme="night"] .iosSettingsPanel .tabActive{
+  background: rgba(248,250,252,0.94);
+  color: #111827;
+}
+
+body[data-theme="night"] .iosSettingsPanel label,
+body[data-theme="night"] .iosSettingsPanel .toggleRow{
+  border-color: rgba(148,163,184,0.10);
+  background: rgba(255,255,255,0.04);
+  color: rgba(241,245,249,0.92);
+}
+
+body[data-theme="night"] .iosSettingsPanel select,
+body[data-theme="night"] .iosSettingsPanel input[type="number"],
+body[data-theme="night"] .iosSettingsPanel input[type="text"]{
+  background: rgba(255,255,255,0.06);
+  border-color: rgba(148,163,184,0.14);
+  color: rgba(241,245,249,0.92);
+}
+
+body[data-theme="night"] .iosSettingsPanel .hint{
+  color: rgba(226,232,240,0.58);
+}
+
+body[data-theme="night"] .iosSettingsPanel .toggle{
+  border-color: rgba(148,163,184,0.16);
+  background: rgba(148,163,184,0.20);
+}
+
+body[data-theme="night"] .iosSettingsPanel .toggleOn{
+  background: #34c759;
+  border-color: rgba(52, 199, 89, 0.72);
+}
+
+body[data-theme="night"] .iosSettingsPanel .infoCard{
+  border-color: rgba(148,163,184,0.10);
+  background: rgba(255,255,255,0.04);
+}
+
+body[data-theme="night"] .iosSettingsPanel .infoLabel,
+body[data-theme="night"] .iosSettingsPanel .infoMeta{
+  color: rgba(226,232,240,0.58);
+}
+
+body[data-theme="night"] .iosSettingsPanel .infoValue{
+  color: rgba(248,250,252,0.96);
+}
+
 @media (max-width: 960px) {
   .overlay{
     padding: 12px;
@@ -433,6 +893,9 @@ input[type="range"]{
     left: 12px;
     top: 12px;
     bottom: auto;
+  }
+  .infoGrid{
+    grid-template-columns: 1fr;
   }
   .viewer{
     position: static;

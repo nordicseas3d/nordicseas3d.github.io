@@ -39,6 +39,76 @@ export function makeLinearPalette(hexStops: string[], n: number): RGB[] {
   return out;
 }
 
+export const CMOCEAN_COLORMAP_IDS = [
+  "algae",
+  "amp",
+  "balance",
+  "curl",
+  "deep",
+  "delta",
+  "dense",
+  "diff",
+  "gray",
+  "haline",
+  "ice",
+  "matter",
+  "oxy",
+  "phase",
+  "rain",
+  "solar",
+  "speed",
+  "tarn",
+  "tempo",
+  "thermal",
+  "topo",
+  "turbid",
+] as const;
+
+export type CmoceanColormapId = (typeof CMOCEAN_COLORMAP_IDS)[number];
+
+const CMOCEAN_COLORMAP_SET = new Set<string>(CMOCEAN_COLORMAP_IDS);
+
+export function isCmoceanColormapId(id: string): id is CmoceanColormapId {
+  return CMOCEAN_COLORMAP_SET.has(id);
+}
+
+// cmocean colormaps sampled from cmocean.cm at 16 evenly spaced anchors and
+// interpolated to 256 colors at runtime to keep bundle size modest.
+const CMOCEAN_SAMPLE_STOPS: Record<CmoceanColormapId, string[]> = {
+  algae: ['#d7f9d0', '#c2eab7', '#acdba0', '#96cd8a', '#7ec175', '#64b463', '#44a855', '#209c51', '#098d4f', '#097d4b', '#126e45', '#175f3d', '#1a5034', '#19412b', '#173320', '#122414'],
+  amp: ['#f1edec', '#e9d9d4', '#e2c5bc', '#dcb1a3', '#d69e8b', '#d08b73', '#ca775b', '#c36346', '#bc4e32', '#b33826', '#a62225', '#941328', '#7f0e29', '#680f25', '#520d1c', '#3c0912'],
+  balance: ['#181c43', '#27337a', '#214cb6', '#1670bc', '#438fba', '#75aabe', '#aac2cb', '#dbdee0', '#e9d9d5', '#dcb2a4', '#d08b73', '#c36346', '#b33826', '#941328', '#680f25', '#3c0912'],
+  curl: ['#151d44', '#1b3e57', '#1a5d6a', '#117d79', '#3c9b81', '#7eb390', '#b6cbb0', '#e8e6dc', '#f4e2d9', '#e6b8a2', '#db8d77', '#ca6363', '#ae4060', '#8b2360', '#601455', '#340d35'],
+  deep: ['#fdfecc', '#dbf1b9', '#b7e5ab', '#92d8a4', '#71caa3', '#5dbaa4', '#52a8a3', '#4b97a0', '#45869c', '#407598', '#3e6495', '#3f528f', '#41407b', '#3c335f', '#332744', '#281a2c'],
+  delta: ['#112040', '#25367a', '#1b569d', '#2378a3', '#3a98ab', '#6db6b3', '#accec6', '#e3ebde', '#f4e9aa', '#d9c560', '#abac21', '#709807', '#33801f', '#0b642c', '#174327', '#172313'],
+  dense: ['#e6f1f1', '#c9e3e8', '#aed4e3', '#96c5e2', '#82b5e3', '#76a4e5', '#7390e3', '#767cdc', '#7968ce', '#7954bb', '#7642a5', '#71328c', '#682471', '#5b1954', '#4a133a', '#360e24'],
+  diff: ['#082340', '#16405f', '#365b74', '#5a7487', '#7d8f9d', '#a0abb4', '#c6cacf', '#eceaeb', '#eee8e3', '#cec7b8', '#b0a68e', '#958967', '#7a6d41', '#5d5423', '#3c3b16', '#1c2207'],
+  gray: ['#000000', '#0a0a0a', '#1c1b1b', '#2b2b2b', '#3b3a3a', '#4a4a49', '#5a5959', '#696968', '#797978', '#8a8989', '#9b9a9a', '#adacac', '#c0bfbe', '#d3d3d2', '#e8e8e7', '#fffffd'],
+  haline: ['#2a186c', '#2e1e95', '#1d37a1', '#0d4e96', '#125f8f', '#206e8b', '#2d7c89', '#378b88', '#409a86', '#4aaa81', '#5ab978', '#71c86b', '#94d35d', '#bddc62', '#e0e57a', '#fdef9a'],
+  ice: ['#040613', '#14142b', '#232244', '#302f5f', '#3a3c7b', '#3f4b96', '#3e5ea9', '#3f71b4', '#4684bb', '#5296c1', '#61a8c7', '#74bace', '#8ccbd6', '#abdbe0', '#cbebee', '#eafdfd'],
+  matter: ['#feedb0', '#fbd59a', '#f9be85', '#f5a773', '#f18f63', '#eb7858', '#e26253', '#d64d54', '#c63c59', '#b32e5f', '#9f2462', '#891d63', '#721a60', '#5b1758', '#45144c', '#2f0f3e'],
+  oxy: ['#400505', '#5c070c', '#79050f', '#504f4f', '#5f5f5e', '#6f6f6e', '#81807f', '#929190', '#a3a3a2', '#b7b7b6', '#cbcac9', '#dfdfde', '#f8fe69', '#e9e637', '#e4c925', '#ddaf19'],
+  phase: ['#a8780d', '#bf672a', '#d05347', '#dc3c6d', '#de27a0', '#d02fd0', '#b64bed', '#9366f4', '#687ce8', '#3b8ccb', '#1e93a8', '#0f9786', '#199a5e', '#539629', '#86880e', '#a8780d'],
+  rain: ['#eeedf3', '#e2dbd8', '#dac9b8', '#cbba98', '#aeb187', '#91a77d', '#739d75', '#51946f', '#2b896e', '#0c7b6e', '#046b6d', '#105c68', '#1e4b5f', '#243b52', '#252b45', '#221b38'],
+  solar: ['#331418', '#481b1f', '#5e2124', '#732724', '#872f21', '#973b1c', '#a54a17', '#b15b14', '#bb6d13', '#c47f15', '#cb921a', '#d2a621', '#d8ba2a', '#dcd034', '#dfe63f', '#e1fd4b'],
+  speed: ['#fffdcd', '#f3e9a9', '#e7d684', '#d8c55f', '#c4b73d', '#aaac20', '#8ea20b', '#709707', '#518c12', '#32801f', '#187328', '#0b632c', '#10542c', '#174327', '#19331f', '#172313'],
+  tarn: ['#17230e', '#2c410f', '#555716', '#846a25', '#b57b36', '#d39868', '#e3bfa3', '#f6e8df', '#f2ece0', '#cbccaa', '#97b298', '#649889', '#2e7e7e', '#1c5f71', '#0e4064', '#101e4f'],
+  tempo: ['#fff6f4', '#e7e6db', '#cfd8c4', '#b6cbaf', '#9bbe9e', '#7db390', '#5da786', '#3b9b81', '#1e8d7e', '#117d79', '#156d73', '#1a5d6a', '#1c4d61', '#1b3e57', '#192e4d', '#151d44'],
+  thermal: ['#042333', '#092e56', '#1c3482', '#40349f', '#5c3e9a', '#744992', '#8b538d', '#a35b86', '#bd637c', '#d66c6c', '#eb7958', '#f78c45', '#fca63c', '#fac140', '#f3dd4b', '#e8fa5b'],
+  topo: ['#281a2c', '#3c335f', '#3f528f', '#407598', '#4b97a0', '#5dbaa4', '#92d8a4', '#dbf1b9', '#153319', '#27511e', '#566635', '#837b3f', '#b3913f', '#cfb06c', '#e2d5a7', '#f9fde4'],
+  turbid: ['#e9f6ab', '#dfe292', '#d7cf7b', '#cfbc66', '#c8a954', '#bf9747', '#b58740', '#a8773c', '#9a6a3b', '#8a5e3a', '#795338', '#674835', '#563e30', '#44342a', '#332a23', '#221f1b'],
+};
+
+const CMOCEAN_CACHE: Partial<Record<CmoceanColormapId, RGB[]>> = {};
+
+export function cmocean_256(id: CmoceanColormapId): RGB[] {
+  const cached = CMOCEAN_CACHE[id];
+  if (cached) return cached;
+  const palette = makeLinearPalette(CMOCEAN_SAMPLE_STOPS[id], 256);
+  CMOCEAN_CACHE[id] = palette;
+  return palette;
+}
+
 export function paletteToColorscale(palette: RGB[]): Array<[number, string]> {
   if (!palette.length) return [];
   const denom = Math.max(1, palette.length - 1);
@@ -169,20 +239,38 @@ export function deep_256(): RGB[] {
 }
 
 export function topo_256(): RGB[] {
-  // Approximation of cmocean.topo: deep blue -> shallow -> greens -> browns -> white.
+  // Smooth bathymetry/topography palette tuned toward the clearer 3D ICE bed-elevation style:
+  // deep blue ocean -> pale shelf -> warm tan land -> soft off-white highs.
   const stops = [
-    "#0b1f3a",
-    "#123c6b",
-    "#1f6fb2",
-    "#52b7d6",
-    "#a7e3e1",
-    "#e6f2c5",
-    "#8fd18b",
-    "#4aa35a",
-    "#8d7b4f",
-    "#b08b5a",
-    "#d7c28f",
-    "#ffffff",
+    "#081a34",
+    "#12396e",
+    "#2a6fae",
+    "#5fa6d1",
+    "#a7d5e6",
+    "#e2eff0",
+    "#f1ebe1",
+    "#d9c39e",
+    "#b89267",
+    "#977152",
+    "#d8cab8",
+    "#fbfaf7",
+  ];
+  return makeLinearPalette(stops, 256);
+}
+
+export function bed_elevation_256(): RGB[] {
+  // Bed-elevation style: black -> deep blue -> cyan -> pale green -> olive -> yellow -> off-white.
+  const stops = [
+    "#000000",
+    "#001132",
+    "#003a8c",
+    "#0f8fce",
+    "#74d0b5",
+    "#b8dfb3",
+    "#5c6a3a",
+    "#b3a24f",
+    "#f2df67",
+    "#f6f1d8",
   ];
   return makeLinearPalette(stops, 256);
 }
