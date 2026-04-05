@@ -339,7 +339,7 @@ async function tryLoadBathyJson(
 
 const DEFAULT_SCENE_CAMERA = {
   // Meridional (northward-facing) default view: camera is south of domain.
-  eye: { x: 0.12, y: -2.15, z: 0.62 },
+  eye: { x: 0.1, y: -1.95, z: 0.86 },
 };
 
 const DEFAULT_VERTICAL_EXAGGERATION = 0.5;
@@ -598,6 +598,8 @@ export default function Basemap3D(props: {
   showFieldContours?: boolean;
   cameraFocusPath?: { nonce: number; lon: number[]; lat: number[] };
   cameraResetNonce?: number;
+  cameraPreset?: { nonce: number; camera: any };
+  drawingMode?: boolean;
 }) {
   const [grid, setGrid] = useState<BathyGrid | null>(null);
   const [bathyStatus, setBathyStatus] = useState<"loading" | "file" | "synthetic">(
@@ -616,6 +618,7 @@ export default function Basemap3D(props: {
   const initialCameraRef = useRef<any | null>(null);
   const skipNextCameraPersistRef = useRef(false);
   const lastCameraFocusNonceRef = useRef<number | null>(null);
+  const lastCameraPresetNonceRef = useRef<number | null>(null);
   const windCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const windParticlesRef = useRef<WindParticle[]>([]);
   const windAnimRafRef = useRef<number | null>(null);
@@ -2603,12 +2606,13 @@ export default function Basemap3D(props: {
           ticktext: zAxisTicks.ticktext as any,
           range: fixedRanges.z as any,
         },
-        dragmode: "orbit",
+        dragmode: props.drawingMode ? (false as any) : "orbit",
         aspectmode: "manual",
         aspectratio: { x: 1.1, y: 1.0, z: DEFAULT_VERTICAL_EXAGGERATION },
       }
     }),
     [
+      props.drawingMode,
       isDayTheme,
       compactLayout,
       fixedRanges.x,
@@ -2669,11 +2673,13 @@ export default function Basemap3D(props: {
   );
 
   useEffect(() => {
+    const liveCam = normalizeCamera(graphDivRef.current?.layout?.scene?.camera);
     const currentCam =
+      liveCam ??
       lastKnownCameraRef.current ??
-      normalizeCamera(graphDivRef.current?.layout?.scene?.camera) ??
       initialCameraRef.current ??
       DEFAULT_SCENE_CAMERA;
+    if (currentCam) lastKnownCameraRef.current = currentCam;
     setPlotRenderData(data);
     const sceneWithCam = {
       ...((layout as any).scene ?? {}),
@@ -2690,9 +2696,9 @@ export default function Basemap3D(props: {
       displayModeBar: false,
       responsive: true,
       displaylogo: false,
-      scrollZoom: true,
+      scrollZoom: !props.drawingMode,
     }),
-    []
+    [props.drawingMode]
   );
 
   const handleInitialized = useCallback((_: any, graphDiv: any) => {
@@ -2754,6 +2760,26 @@ export default function Basemap3D(props: {
       // ignore
     }
   }, [props.cameraResetNonce]);
+
+  useEffect(() => {
+    const preset = props.cameraPreset;
+    if (!preset || !Number.isFinite(Number(preset.nonce))) return;
+    if (lastCameraPresetNonceRef.current === preset.nonce) return;
+
+    const Plotly = plotlyLibRef.current;
+    const graphDiv = graphDivRef.current;
+    if (!Plotly || !graphDiv || !didInitCameraRef.current) return;
+    lastCameraPresetNonceRef.current = preset.nonce;
+
+    const cam = normalizeCamera(preset.camera) ?? DEFAULT_SCENE_CAMERA;
+    lastKnownCameraRef.current = cam;
+    skipNextCameraPersistRef.current = true;
+    try {
+      void Plotly.relayout(graphDiv, { "scene.camera": cam });
+    } catch {
+      skipNextCameraPersistRef.current = false;
+    }
+  }, [graphDivVersion, props.cameraPreset]);
 
   useEffect(() => {
     const focus = props.cameraFocusPath;
@@ -3040,7 +3066,7 @@ export default function Basemap3D(props: {
   }
 
   return (
-    <div className="basemap">
+    <div className="basemap" style={{ cursor: props.drawingMode ? "crosshair" : "grab" }}>
       <Plot
         data={plotRenderData as PlotData[]}
         layout={plotRenderLayout as Layout}
@@ -3052,7 +3078,7 @@ export default function Basemap3D(props: {
         onHover={handleHover as any}
         onUnhover={handleUnhover as any}
         onClick={handleClick as any}
-        style={{ width: "100%", height: "100%" }}
+        style={{ width: "100%", height: "100%", cursor: props.drawingMode ? "crosshair" : "grab" }}
         useResizeHandler
       />
       {props.viewerHint ? <div className="mapFooterHint">{props.viewerHint}</div> : null}

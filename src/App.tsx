@@ -121,7 +121,7 @@ const VIEW_MODE_DESCRIPTIONS: Record<Exclude<ViewMode, "eddies">, string> = {
   horizontal:
     "Horizontal: view the selected variable on a constant-depth map slice. Select depth under Tempo-spatial, define color scheme under Color scale.",
   transect:
-    "Zonal: view the selected variable on a west-east section at a chosen latitude. Select latitude under Tempo-spatial, define color scheme under Color scale.",
+    "Zonal: view the selected variable on a west-east section at a chosen latitude. Slice the latitude target under Tempo-spatial, define color scheme under Color scale.",
   draw:
     "Draw: sample the selected variable along an arbitrary line between two map points. Set depth and draw the line under View, define color scheme under Color scale.",
   class:
@@ -386,12 +386,12 @@ const FIELD_COLORMAP_OPTIONS: Array<{ id: FieldColormapId; label: string }> = [
 ];
 
 const BATHY_SOURCE_OPTIONS: Array<{ id: BathySourceId; label: string; hint: string }> = [
-  { id: "model", label: "Topography with MITgcm model grid", hint: "4.5-1 km model-grid bathymetry." },
-  { id: "rtopo", label: "30 arcseconds RTopo-2.0.4", hint: "30 arcsec source, heavier but sharper." },
+  { id: "model", label: "MITgcm model grid", hint: "4.5-1 km model-grid bathymetry." },
+  { id: "rtopo", label: 'RTopo-2.0.4 (30")', hint: "30 arcsec source, heavier but sharper." },
 ];
 
 const BATHY_COLORMAP_OPTIONS: Array<{ id: BathyColormapId; label: string }> = [
-  { id: "bed_elevation", label: "Bed elevation" },
+  { id: "bed_elevation", label: "Bed relief" },
   ...CMOCEAN_COLORMAP_OPTIONS,
   { id: "grayscale", label: "Grayscale" },
   { id: "blues_r", label: "Blues_r" },
@@ -460,10 +460,21 @@ const SEA_ICE_HEIGHT_M = 65;
 const SEA_ICE_OPACITY = 0.55;
 const MOBILE_PANEL_BREAKPOINT_PX = 820;
 const PANEL_SIZE_STORAGE_KEY = "gs_panel_size_v1";
-const PANEL_MIN_WIDTH = 320;
-const PANEL_MIN_HEIGHT = 360;
+const PANEL_MIN_WIDTH = 300;
+const PANEL_MIN_HEIGHT = 320;
 const PANEL_MAX_WIDTH = 620;
 const PANEL_MAX_HEIGHT = 900;
+const PANEL_FIXED_DESKTOP_WIDTH = 352;
+const PANEL_SAFE_MIN_WIDTH = 240;
+const PANEL_SAFE_MIN_HEIGHT = 280;
+const PLOTLY_OVERVIEW_CAMERA = {
+  eye: { x: 0.1, y: -1.95, z: 0.86 },
+  up: { x: 0, y: 0, z: 1 },
+};
+const ZONAL_OVERVIEW_CAMERA = {
+  eye: { x: 0.06, y: -1.65, z: 1.24 },
+  up: { x: 0, y: 0, z: 1 },
+};
 function panelOpenStorageKey(isMobile: boolean) {
   return isMobile ? "gs_panel_open_mobile" : "gs_panel_open_desktop";
 }
@@ -474,11 +485,18 @@ function clampPanelSize(
   viewportHeight: number,
   isMobile: boolean
 ) {
-  const maxWidth = Math.max(PANEL_MIN_WIDTH, Math.min(PANEL_MAX_WIDTH, viewportWidth - (isMobile ? 24 : 32)));
-  const maxHeight = Math.max(PANEL_MIN_HEIGHT, Math.min(PANEL_MAX_HEIGHT, viewportHeight - (isMobile ? 24 : 32)));
+  const viewportMargin = isMobile ? 24 : 32;
+  const availableWidth = Math.max(PANEL_SAFE_MIN_WIDTH, viewportWidth - viewportMargin);
+  const availableHeight = Math.max(PANEL_SAFE_MIN_HEIGHT, viewportHeight - viewportMargin);
+  const minWidth = Math.min(PANEL_MIN_WIDTH, availableWidth);
+  const minHeight = Math.min(PANEL_MIN_HEIGHT, availableHeight);
+  const maxWidth = isMobile
+    ? Math.max(minWidth, Math.min(PANEL_MAX_WIDTH, availableWidth))
+    : Math.max(minWidth, Math.min(PANEL_FIXED_DESKTOP_WIDTH, availableWidth));
+  const maxHeight = Math.max(minHeight, Math.min(PANEL_MAX_HEIGHT, availableHeight));
   return {
-    width: clamp(size.width, PANEL_MIN_WIDTH, maxWidth),
-    height: clamp(size.height, PANEL_MIN_HEIGHT, maxHeight),
+    width: isMobile ? clamp(size.width, minWidth, maxWidth) : maxWidth,
+    height: clamp(size.height, minHeight, maxHeight),
   };
 }
 
@@ -496,7 +514,7 @@ function defaultPanelSize(viewportWidth: number, viewportHeight: number, isMobil
   }
   return clampPanelSize(
     {
-      width: 420,
+      width: PANEL_FIXED_DESKTOP_WIDTH,
       height: Math.max(640, viewportHeight - 32),
     },
     viewportWidth,
@@ -1058,11 +1076,11 @@ function RangeNudgeSlider(props: {
   const canDecrease = !disabled && value > min + epsilon;
   const canIncrease = !disabled && value < max - epsilon;
 
-  const buttonStyle = { minWidth: 28, padding: "2px 8px", lineHeight: 1, fontWeight: 700 };
+  const buttonStyle = { minWidth: 22, padding: "2px 5px", lineHeight: 1, fontWeight: 700 };
 
   if (buttonLayout === "horizontal") {
     return (
-      <div style={{ display: "grid", gridTemplateColumns: "auto 1fr auto", alignItems: "center", gap: 8 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "auto 1fr auto", alignItems: "center", gap: 6 }}>
         <button
           type="button"
           className="tab"
@@ -1100,7 +1118,7 @@ function RangeNudgeSlider(props: {
   }
 
   return (
-    <div style={{ display: "flex", alignItems: "stretch", gap: 8 }}>
+    <div style={{ display: "flex", alignItems: "stretch", gap: 6 }}>
       <input
         type="range"
         min={min}
@@ -1111,7 +1129,7 @@ function RangeNudgeSlider(props: {
         style={{ width: "100%", flex: 1 }}
         disabled={disabled}
       />
-      <div style={{ display: "flex", flexDirection: "column", gap: 4, flex: "0 0 auto" }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 3, flex: "0 0 auto" }}>
         <button
           type="button"
           className="tab"
@@ -1362,12 +1380,12 @@ export default function App() {
     }
   });
   const [showWind, setShowWind] = useState(false);
-  const windHorizontalDefaultAppliedRef = useRef(false);
+  const [plotlyCameraNonce, setPlotlyCameraNonce] = useState(0);
   useEffect(() => {
-    if (viewMode !== "horizontal") return;
-    if (windHorizontalDefaultAppliedRef.current) return;
-    windHorizontalDefaultAppliedRef.current = true;
-    setShowWind(true);
+    setShowWind(false);
+    if (viewMode !== "horizontal") {
+      setPlotlyCameraNonce((value) => value + 1);
+    }
   }, [viewMode]);
   useEffect(() => {
     try {
@@ -1469,6 +1487,7 @@ export default function App() {
   const range = useMemo(() => defaultRange(varId), [varId]);
   const settings = colorSettings[varId];
   const classSettings = classSettingsByVar[varId];
+  const colorScaleUsesClassRange = viewMode === "class";
   const classInputs = classInputByVar[varId];
   const colorInputs = colorInputByVar[varId];
   const colorScaleStep = useMemo(() => {
@@ -1501,7 +1520,15 @@ export default function App() {
   const isMobileViewport = viewportWidth <= MOBILE_PANEL_BREAKPOINT_PX;
   const isMobilePortraitViewport = isMobileViewport && viewportHeight > viewportWidth;
   const panelBoxSize = clampPanelSize(panelSize, viewportWidth, viewportHeight, isMobileViewport);
-  const threeCameraAutoFitKey = `${viewportWidth}x${viewportHeight}|${panelOpen ? 1 : 0}|${bathySource}`;
+  const panelDisplayHeight =
+    isFullscreen && !isMobileViewport
+      ? Math.max(PANEL_SAFE_MIN_HEIGHT, viewportHeight - 32)
+      : panelBoxSize.height;
+  const panelLeft = panelPos?.left ?? (isMobileViewport ? 12 : 16);
+  const panelReservedLeftPx =
+    panelOpen && !isMobileViewport && panelLeft <= 24 ? panelLeft + panelBoxSize.width + 18 : 0;
+  const threeCameraAutoFitKey =
+    `${viewportWidth}x${viewportHeight}|${panelOpen ? 1 : 0}|${bathySource}|${Math.round(panelReservedLeftPx)}`;
   const feedbackLabelColor =
     themeMode === "day" ? "rgba(15, 23, 42, 0.72)" : "rgba(241, 245, 249, 0.76)";
   const feedbackLinkColor =
@@ -1573,15 +1600,21 @@ export default function App() {
     ? ` ${activeOverlaySummary.join(" and ")} ${activeOverlaySummary.length === 1 ? "is" : "are"} on.`
     : "";
   const horizontalModeLabel = overlayOpacity > 0.001 ? range.title : "Topography";
+  const drawMapInstruction =
+    drawTransectPoints.length >= 2
+      ? `Draw mode is showing your transect cross-section at ${activeTimeLabel}. Click "Clear" in the panel to remove the line, then adjust the view angle and click "Draw line" for a new transect.${activeOverlayText}`
+      : drawTransectArmed && drawTransectPoints.length === 1
+        ? `Draw mode: move gently and slowly over the map, then click the end point.${activeOverlayText}`
+        : `Draw mode: adjust the view angle first, then click "Draw line", then move gently and slowly over the map and click the start point and end point.${activeOverlayText}`;
   const currentModeSummary =
     viewMode === "horizontal"
       ? overlayOpacity > 0.001
         ? `Horizontal mode is showing ${horizontalModeLabel} at ${activeDepthLabel} and ${activeTimeLabel}.${activeOverlayText}`
         : `Horizontal mode is showing ${horizontalModeLabel}.${activeOverlayText}`
       : viewMode === "transect"
-        ? `Transect mode is showing a west-east section at ${latTarget.toFixed(2)}°N and ${activeTimeLabel}.${activeOverlayText}`
-        : viewMode === "draw"
-          ? `Draw mode is showing your transect cross-section at ${activeTimeLabel}${drawTransectPoints.length >= 2 ? " with the drawn line active." : "."}${activeOverlayText}`
+        ? `Zonal mode is showing a west-east section at ${latTarget.toFixed(2)}°N and ${activeTimeLabel}. Slice the latitude target to move the section north or south.${activeOverlayText}`
+      : viewMode === "draw"
+          ? drawMapInstruction
           : viewMode === "class"
             ? `Class mode is showing ${range.title} point-cloud classes between ${classMin} and ${classMax} at ${activeTimeLabel}.${activeOverlayText}`
             : `Eddy mode is showing eddy detections at ${activeTimeLabel}.${activeOverlayText}`;
@@ -1616,6 +1649,19 @@ export default function App() {
   );
 
   useEffect(() => {
+    if (viewMode !== "transect" && viewMode !== "draw") return;
+    if (availableVars.includes("T")) {
+      setVarId("T");
+      setOverlayOpacity((prev) => (prev > 0.001 ? prev : 0.9));
+      return;
+    }
+    if (availableVars.length) {
+      setVarId(availableVars[0]);
+      setOverlayOpacity((prev) => (prev > 0.001 ? prev : 0.9));
+    }
+  }, [availableVars, viewMode]);
+
+  useEffect(() => {
     const nextMin = String(classSettings.min);
     const nextMax = String(classSettings.max);
     setClassInputByVar((prev) => {
@@ -1629,8 +1675,8 @@ export default function App() {
   }, [classSettings.max, classSettings.min, varId]);
 
   useEffect(() => {
-    const nextMin = String(settings.cmin);
-    const nextMax = String(settings.cmax);
+    const nextMin = String(colorScaleUsesClassRange ? classSettings.min : settings.cmin);
+    const nextMax = String(colorScaleUsesClassRange ? classSettings.max : settings.cmax);
     setColorInputByVar((prev) => {
       const curr = prev[varId];
       if (curr?.min === nextMin && curr?.max === nextMax) return prev;
@@ -1639,7 +1685,7 @@ export default function App() {
         [varId]: { min: nextMin, max: nextMax },
       };
     });
-  }, [settings.cmax, settings.cmin, varId]);
+  }, [classSettings.max, classSettings.min, colorScaleUsesClassRange, settings.cmax, settings.cmin, varId]);
 
   useEffect(() => {
     const next = String(eddyThreshold);
@@ -1722,16 +1768,32 @@ export default function App() {
       if (viewMode === "draw") setDrawAutoColorRangeEnabled(false);
       const raw = (colorInputByVar[varId]?.[bound] ?? "").trim();
       const parsed = parseFiniteNumberInput(raw);
-      const fallback = bound === "min" ? settings.cmin : settings.cmax;
-      const colorKey = bound === "min" ? "cmin" : "cmax";
+      const fallback = colorScaleUsesClassRange
+        ? bound === "min"
+          ? classSettings.min
+          : classSettings.max
+        : bound === "min"
+          ? settings.cmin
+          : settings.cmax;
       if (parsed != null) {
-        setColorSettings((prev) => ({
-          ...prev,
-          [varId]: {
-            ...prev[varId],
-            [colorKey]: parsed,
-          },
-        }));
+        if (colorScaleUsesClassRange) {
+          setClassSettingsByVar((prev) => ({
+            ...prev,
+            [varId]: {
+              ...prev[varId],
+              [bound]: parsed,
+            },
+          }));
+        } else {
+          const colorKey = bound === "min" ? "cmin" : "cmax";
+          setColorSettings((prev) => ({
+            ...prev,
+            [varId]: {
+              ...prev[varId],
+              [colorKey]: parsed,
+            },
+          }));
+        }
         setColorInputByVar((prev) => ({
           ...prev,
           [varId]: {
@@ -1749,7 +1811,17 @@ export default function App() {
         }));
       }
     },
-    [colorInputByVar, setDrawAutoColorRangeEnabled, settings.cmax, settings.cmin, varId, viewMode]
+    [
+      classSettings.max,
+      classSettings.min,
+      colorInputByVar,
+      colorScaleUsesClassRange,
+      setDrawAutoColorRangeEnabled,
+      settings.cmax,
+      settings.cmin,
+      varId,
+      viewMode,
+    ]
   );
 
   const updateColorInputLive = useCallback(
@@ -1761,35 +1833,55 @@ export default function App() {
       }));
       const parsed = parseFiniteNumberInput(rawValue);
       if (parsed == null) return;
-      const colorKey = bound === "min" ? "cmin" : "cmax";
-      setColorSettings((prev) => ({
-        ...prev,
-        [varId]: {
-          ...prev[varId],
-          [colorKey]: parsed,
-        },
-      }));
+      if (colorScaleUsesClassRange) {
+        setClassSettingsByVar((prev) => ({
+          ...prev,
+          [varId]: {
+            ...prev[varId],
+            [bound]: parsed,
+          },
+        }));
+      } else {
+        const colorKey = bound === "min" ? "cmin" : "cmax";
+        setColorSettings((prev) => ({
+          ...prev,
+          [varId]: {
+            ...prev[varId],
+            [colorKey]: parsed,
+          },
+        }));
+      }
     },
-    [setDrawAutoColorRangeEnabled, varId, viewMode]
+    [colorScaleUsesClassRange, setDrawAutoColorRangeEnabled, varId, viewMode]
   );
 
   const nudgeColorScaleBound = useCallback(
     (bound: "min" | "max", direction: 1 | -1) => {
       if (viewMode === "draw") setDrawAutoColorRangeEnabled(false);
-      const currentMin = settings.cmin;
-      const currentMax = settings.cmax;
+      const currentMin = colorScaleUsesClassRange ? classSettings.min : settings.cmin;
+      const currentMax = colorScaleUsesClassRange ? classSettings.max : settings.cmax;
       const next =
         bound === "min"
           ? nudgeBoundedValue(currentMin, direction, colorScaleStep, Number.NEGATIVE_INFINITY, currentMax)
           : nudgeBoundedValue(currentMax, direction, colorScaleStep, currentMin, Number.POSITIVE_INFINITY);
-      const colorKey = bound === "min" ? "cmin" : "cmax";
-      setColorSettings((prev) => ({
-        ...prev,
-        [varId]: {
-          ...prev[varId],
-          [colorKey]: next,
-        },
-      }));
+      if (colorScaleUsesClassRange) {
+        setClassSettingsByVar((prev) => ({
+          ...prev,
+          [varId]: {
+            ...prev[varId],
+            [bound]: next,
+          },
+        }));
+      } else {
+        const colorKey = bound === "min" ? "cmin" : "cmax";
+        setColorSettings((prev) => ({
+          ...prev,
+          [varId]: {
+            ...prev[varId],
+            [colorKey]: next,
+          },
+        }));
+      }
       setColorInputByVar((prev) => ({
         ...prev,
         [varId]: {
@@ -1798,7 +1890,17 @@ export default function App() {
         },
       }));
     },
-    [colorScaleStep, setDrawAutoColorRangeEnabled, settings.cmax, settings.cmin, varId, viewMode]
+    [
+      classSettings.max,
+      classSettings.min,
+      colorScaleStep,
+      colorScaleUsesClassRange,
+      setDrawAutoColorRangeEnabled,
+      settings.cmax,
+      settings.cmin,
+      varId,
+      viewMode,
+    ]
   );
 
   const nudgeTickCount = useCallback(
@@ -1884,24 +1986,23 @@ export default function App() {
       ViewMode,
       "eddies"
     >];
+  const showPlotlyPerformanceHint = viewMode === "transect" || viewMode === "draw" || viewMode === "class";
   const drawTransectHint =
     !drawTransectArmed && drawTransectPoints.length < 2
-      ? 'Draw mode is idle. Click "Redraw line" or clear the line to start a new transect.'
+      ? 'Draw mode is idle. Adjust the view angle first, then click "Draw line".'
       : drawTransectArmed && drawTransectPoints.length === 0
-        ? "Hover the map, then click the transect start point."
+        ? 'Move gently and slowly over the map, then click the transect start point.'
       : drawTransectArmed && drawTransectPoints.length === 1
-          ? "Move over the map to preview the line, then click the transect end point."
+          ? "Move gently and slowly over the map to preview the line, then click the transect end point."
           : drawTransectPoints.length >= 2
-            ? `Transect length: ${drawTransectLengthKm.toFixed(0)} km.`
+            ? `Transect length: ${drawTransectLengthKm.toFixed(0)} km. Click "Clear" to remove it, then adjust the angle and click "Draw line" to start again.`
             : "Draw a line to extract an arbitrary transect.";
 
   useEffect(() => {
     if (viewMode !== "draw") {
       setDrawTransectArmed(false);
       setDrawTransectHoverPoint(null);
-      return;
     }
-    if (!drawTransectPoints.length) setDrawTransectArmed(true);
   }, [viewMode]);
 
   useEffect(() => {
@@ -2894,7 +2995,7 @@ export default function App() {
   const bathyColorbarSubtitle =
     bathySource === "rtopo"
       ? "30 arcseconds RTopo-2.0.4 bed elevation (m)"
-      : "Topography with MITgcm model grid";
+      : "MITgcm model grid";
 
   const eddyLayer = useMemo(() => {
     if (!meta || !projectOn3d || viewMode !== "eddies" || !eddyDetection || !eddyVolume) return undefined;
@@ -2951,6 +3052,16 @@ export default function App() {
 
   const resetColorScale = useCallback(() => {
     if (viewMode === "draw") setDrawAutoColorRangeEnabled(false);
+    if (viewMode === "class") {
+      setClassSettingsByVar((prev) => ({
+        ...prev,
+        [varId]: {
+          ...prev[varId],
+          min: DEFAULT_CLASS_SETTINGS[varId].min,
+          max: DEFAULT_CLASS_SETTINGS[varId].max,
+        },
+      }));
+    }
     setColorSettings((prev) => ({ ...prev, [varId]: DEFAULT_COLOR_SETTINGS[varId] }));
     setFieldColormapByVar((prev) => ({ ...prev, [varId]: DEFAULT_FIELD_COLORMAP[varId] }));
   }, [setDrawAutoColorRangeEnabled, varId, viewMode]);
@@ -3027,12 +3138,23 @@ export default function App() {
   const autoColorScaleFromFrame = useCallback(() => {
     if (viewMode === "draw") setDrawAutoColorRangeEnabled(false);
     const values =
-      viewMode === "horizontal" || (viewMode === "draw" && !transectValuesMasked)
+      viewMode === "horizontal" || viewMode === "class" || (viewMode === "draw" && !transectValuesMasked)
         ? horizontalValuesMasked
         : transectValuesMasked;
     if (!values) return;
     const mm = computeMinMax(values, { ignoreExactZero: varId === "S" });
     if (!mm) return;
+    if (viewMode === "class") {
+      setClassSettingsByVar((prev) => ({
+        ...prev,
+        [varId]: {
+          ...prev[varId],
+          min: Number(mm.min.toFixed(3)),
+          max: Number(mm.max.toFixed(3)),
+        },
+      }));
+      return;
+    }
     setColorSettings((prev) => ({
       ...prev,
       [varId]: {
@@ -3064,6 +3186,7 @@ export default function App() {
           cameraAutoFitKey={threeCameraAutoFitKey}
           cameraResetNonce={cameraResetNonce}
           depthRatio={deferredDepthRatio}
+          fitReservedLeftPx={panelReservedLeftPx}
           themeMode={themeMode}
           showBathy={showBathy}
           onStatusChange={handleStatusChange}
@@ -3071,6 +3194,7 @@ export default function App() {
           horizontalPlanes={horizontalPlanes}
           windLayer={windLayer}
           guidePath={drawGuidePath}
+          drawingMode={viewMode === "draw" && drawTransectArmed}
           onSurfacePick={handleDrawSurfacePick}
           onSurfaceHover={handleDrawSurfaceHover}
           viewerHint={currentModeSummary}
@@ -3103,6 +3227,15 @@ export default function App() {
           classLayer={classLayer}
           eddyLayer={eddyLayer}
           transectField={transectField}
+          cameraPreset={
+            viewMode !== "horizontal"
+              ? {
+                  nonce: plotlyCameraNonce,
+                  camera: viewMode === "transect" ? ZONAL_OVERVIEW_CAMERA : PLOTLY_OVERVIEW_CAMERA,
+                }
+              : undefined
+          }
+          drawingMode={viewMode === "draw" && drawTransectArmed}
           onSurfacePick={handleDrawSurfacePick}
           onSurfaceHover={handleDrawSurfaceHover}
           viewerHint={currentModeSummary}
@@ -3126,8 +3259,10 @@ export default function App() {
             style={{
               left: panelPos?.left ?? (isMobileViewport ? 12 : 16),
               width: panelBoxSize.width,
-              height: panelBoxSize.height,
-              ...(panelPos
+              height: panelDisplayHeight,
+              ...(isFullscreen && !isMobileViewport
+                ? { top: 16 }
+                : panelPos
                 ? { top: panelPos.top }
                 : isMobileViewport
                   ? { top: 12 }
@@ -3247,7 +3382,7 @@ export default function App() {
                     <span className="sectionGlyph sectionGlyphMode" aria-hidden>◫</span>
                     <div className="sectionSubhead">View mode</div>
                   </div>
-                  <div className="tabs">
+                  <div className="tabs tabs4">
                     <button
                       className={`tab ${viewMode === "horizontal" ? "tabActive" : ""}`}
                       onClick={() => setViewMode("horizontal")}
@@ -3293,7 +3428,53 @@ export default function App() {
                       Class
                     </button>
                   </div>
+                  {viewMode === "draw" ? (
+                    <>
+                      <div style={{ display: "flex", gap: 10 }}>
+                        <button
+                          type="button"
+                          className="tab"
+                          style={{ flex: 1 }}
+                          disabled={metaStatus !== "ready"}
+                          onClick={() => {
+                            setDrawTransectPoints([]);
+                            setDrawTransectHoverPoint(null);
+                            setDrawTransectArmed(true);
+                          }}
+                        >
+                          {drawTransectArmed ? "Click the map..." : "Draw line"}
+                        </button>
+                        <button
+                          type="button"
+                          className="tab"
+                          style={{ flex: 1 }}
+                          disabled={metaStatus !== "ready"}
+                          onClick={() => {
+                            setDrawTransectArmed(false);
+                            setDrawTransectPoints([]);
+                            setDrawTransectHoverPoint(null);
+                          }}
+                        >
+                          Clear
+                        </button>
+                      </div>
+                      <div className="hint">{drawTransectHint}</div>
+                      {drawTransectPoints[0] ? (
+                        <div className="hint">
+                          Start: {drawTransectPoints[0].lon.toFixed(2)}°, {drawTransectPoints[0].lat.toFixed(2)}°N
+                        </div>
+                      ) : null}
+                      {drawTransectPoints[1] ? (
+                        <div className="hint">
+                          End: {drawTransectPoints[1].lon.toFixed(2)}°, {drawTransectPoints[1].lat.toFixed(2)}°N
+                        </div>
+                      ) : null}
+                    </>
+                  ) : null}
                   <div className="hint">{viewModeDescription}</div>
+                  {showPlotlyPerformanceHint ? (
+                    <div className="hint">Plotly rendering may be slow in this mode.</div>
+                  ) : null}
 
                   <div className="sectionSubheadRow">
                     <span className="sectionGlyph sectionGlyphTopo" aria-hidden>⌂</span>
@@ -3386,7 +3567,7 @@ export default function App() {
                       />
                     </div>
                     <div className="toggleRow">
-                      <div>Wind stress on ocean</div>
+                      <div>Wind stress</div>
                       <ToggleSwitch checked={showWind} onCheckedChange={setShowWind} />
                     </div>
                     <div className="toggleRow">
@@ -3397,6 +3578,7 @@ export default function App() {
                   <label>
                     Field opacity
                     <select
+                      className="selectCompact"
                       value={String(overlayOpacity)}
                       onChange={(e) => setOverlayOpacity(Number(e.target.value))}
                       disabled={!projectOn3d}
@@ -3652,7 +3834,11 @@ export default function App() {
                   ) : null}
 
                   <div className="hint">
-                    Default: <b>[{DEFAULT_COLOR_SETTINGS[varId].cmin}, {DEFAULT_COLOR_SETTINGS[varId].cmax}]</b>
+                    Default: <b>[
+                      {viewMode === "class" ? DEFAULT_CLASS_SETTINGS[varId].min : DEFAULT_COLOR_SETTINGS[varId].cmin},
+                      {" "}
+                      {viewMode === "class" ? DEFAULT_CLASS_SETTINGS[varId].max : DEFAULT_COLOR_SETTINGS[varId].cmax}
+                    ]</b>
                   </div>
 
                   <div className="sectionSubheadRow">
@@ -3732,53 +3918,6 @@ export default function App() {
                           </div>
                         ) : null}
                       </label>
-                      {viewMode === "draw" ? (
-                        <>
-                          <div style={{ display: "flex", gap: 10 }}>
-                            <button
-                              type="button"
-                              className="tab"
-                              style={{ flex: 1 }}
-                              disabled={metaStatus !== "ready"}
-                              onClick={() => {
-                                setDrawTransectPoints([]);
-                                setDrawTransectHoverPoint(null);
-                                setDrawTransectArmed(true);
-                              }}
-                            >
-                              {drawTransectArmed
-                                ? "Click the map…"
-                                : drawTransectPoints.length >= 2
-                                  ? "Redraw line"
-                                  : "Draw line"}
-                            </button>
-                            <button
-                              type="button"
-                              className="tab"
-                              style={{ flex: 1 }}
-                              disabled={!drawTransectPoints.length && !drawTransectArmed}
-                              onClick={() => {
-                                setDrawTransectArmed(false);
-                                setDrawTransectPoints([]);
-                                setDrawTransectHoverPoint(null);
-                              }}
-                            >
-                              Clear
-                            </button>
-                          </div>
-                          <div className="hint">{drawTransectHint}</div>
-                          {drawTransectPoints[0] ? (
-                            <div className="hint">
-                              Start: {drawTransectPoints[0].lon.toFixed(2)}°, {drawTransectPoints[0].lat.toFixed(2)}°N
-                            </div>
-                          ) : null}
-                          {drawTransectPoints[1] ? (
-                            <div className="hint">
-                              End: {drawTransectPoints[1].lon.toFixed(2)}°, {drawTransectPoints[1].lat.toFixed(2)}°N
-                            </div>
-                          ) : null}
-                        </>
-                          ) : null}
                     </>
                   ) : viewMode === "transect" ? (
                     <label>
@@ -3803,6 +3942,7 @@ export default function App() {
                         <span>{latMin.toFixed(1)}°N</span>
                         <span>{latMax.toFixed(1)}°N</span>
                       </div>
+                      <div className="hint">Slice the latitude target to move the zonal section north or south.</div>
                       <div style={{ display: "flex", alignItems: "stretch", gap: 8, marginTop: 8 }}>
                         <input
                           type="number"

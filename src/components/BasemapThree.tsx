@@ -471,6 +471,7 @@ export default function BasemapThree(props: {
   guidePath?: GuidePath;
   onSurfacePick?: (pick: { lon: number; lat: number }) => void;
   onSurfaceHover?: (pick: { lon: number; lat: number } | null) => void;
+  drawingMode?: boolean;
   viewerHint?: string;
   onStatusChange?: (status: {
     plotly: "loading" | "ready" | "failed";
@@ -480,6 +481,7 @@ export default function BasemapThree(props: {
   }) => void;
   cameraResetNonce?: number;
   cameraAutoFitKey?: string | number;
+  fitReservedLeftPx?: number;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
@@ -529,7 +531,11 @@ export default function BasemapThree(props: {
 
     const center = fit.center;
     const domainRadius = fit.radius;
-    const frameTarget = center.clone().add(new THREE.Vector3(-domainRadius * 0.035, 0, 0));
+    const hostWidth = Math.max(1, containerRef.current?.clientWidth ?? 1);
+    const reservedLeftRatio = clamp((props.fitReservedLeftPx ?? 0) / hostWidth, 0, 0.42);
+    const frameTarget = center
+      .clone()
+      .add(new THREE.Vector3(-domainRadius * (0.035 + reservedLeftRatio * 0.9), 0, 0));
 
     camera.updateMatrixWorld();
     const targetDist = controls.target.distanceTo(frameTarget);
@@ -580,7 +586,7 @@ export default function BasemapThree(props: {
     camera.updateMatrixWorld(true);
     controls.update();
     didSetInitialTargetRef.current = true;
-  }, []);
+  }, [props.fitReservedLeftPx]);
 
   const isDayTheme = props.themeMode === "day";
 
@@ -618,6 +624,13 @@ export default function BasemapThree(props: {
   useEffect(() => {
     onSurfacePickRef.current = props.onSurfacePick;
   }, [props.onSurfacePick]);
+
+  useEffect(() => {
+    const controls = controlsRef.current;
+    if (!controls) return;
+    controls.enabled = !props.drawingMode;
+    controls.update();
+  }, [props.drawingMode]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1473,7 +1486,7 @@ export default function BasemapThree(props: {
   const scalarColorbars = colorbars.filter((bar) => bar.id !== "bathy");
 
   return (
-      <div className="basemap" ref={containerRef}>
+      <div className="basemap" ref={containerRef} style={{ cursor: props.drawingMode ? "crosshair" : "grab" }}>
       {runtimeStatus === "loading" || bathyStatus === "loading" ? (
         <div
           style={{

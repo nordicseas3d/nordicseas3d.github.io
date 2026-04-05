@@ -166,11 +166,12 @@ body[data-theme="day"] .mapFooterHint{
   bottom: 16px;
   width: min(420px, calc(100vw - 32px));
   max-height: calc(100vh - 32px);
-  padding: 12px 12px 10px;
+  padding: 10px 10px 8px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  overflow: auto;
+  gap: 8px;
+  overflow-x: hidden;
+  overflow-y: auto;
   overscroll-behavior: contain;
 }
 
@@ -196,7 +197,7 @@ body[data-theme="day"] .mapFooterHint{
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: 8px;
   user-select: none;
   cursor: grab;
   padding: 2px 2px;
@@ -207,7 +208,7 @@ body[data-theme="day"] .mapFooterHint{
 .panelHeaderRight{
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 }
 
 .panelResizeHandle{
@@ -274,7 +275,7 @@ body[data-theme="day"] .panelResizeHandle{
   border: 1px solid rgba(255,255,255,0.08);
   border-radius: 12px;
   background: rgba(255,255,255,0.02);
-  padding: 8px 10px;
+  padding: 8px 9px;
 }
 .section > summary{
   list-style: none;
@@ -298,20 +299,20 @@ body[data-theme="day"] .panelResizeHandle{
 
 .sectionBody{
   display: grid;
-  gap: 10px;
-  margin-top: 10px;
+  gap: 8px;
+  margin-top: 8px;
 }
 
 .title{
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 10px;
-  margin-bottom: 10px;
+  gap: 8px;
+  margin-bottom: 8px;
 }
 
 .title h1{
-  font-size: 16px;
+  font-size: 15px;
   margin: 0;
   letter-spacing: 0.2px;
 }
@@ -323,7 +324,7 @@ body[data-theme="day"] .panelResizeHandle{
 
 .controls{
   display: grid;
-  gap: 10px;
+  gap: 8px;
 }
 
 .sectionSubhead{
@@ -336,20 +337,30 @@ body[data-theme="day"] .panelResizeHandle{
 
 .tabs{
   display: flex;
-  gap: 8px;
+  gap: 4px;
+  min-width: 0;
+}
+
+.tabs4{
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .tab{
   flex: 1;
+  min-width: 0;
   cursor: pointer;
   user-select: none;
-  padding: 10px 10px;
+  padding: 8px 8px;
   border-radius: 10px;
   border: 1px solid var(--panelBorder);
   background: rgba(255,255,255,0.04);
   color: var(--text);
   font-size: 12px;
   font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .tabActive{
@@ -361,20 +372,31 @@ body[data-theme="day"] .panelResizeHandle{
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: 8px;
   font-size: 12px;
   color: var(--muted);
+}
+
+.toggleRow > div:first-child{
+  flex: 1;
+  min-width: 0;
 }
 
 .toggleGrid2{
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
+  gap: 6px;
+}
+
+.toggleGrid2 .toggleRow > div:first-child{
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .toggle{
-  width: 46px;
-  height: 26px;
+  width: 42px;
+  height: 24px;
   border-radius: 999px;
   border: 1px solid rgba(255,255,255,0.18);
   background: rgba(255,255,255,0.10);
@@ -393,8 +415,8 @@ body[data-theme="day"] .panelResizeHandle{
   position: absolute;
   top: 2px;
   left: 2px;
-  width: 22px;
-  height: 22px;
+  width: 18px;
+  height: 18px;
   border-radius: 50%;
   background: rgba(255,255,255,0.95);
   box-shadow: 0 1px 3px rgba(0,0,0,0.35);
@@ -402,7 +424,7 @@ body[data-theme="day"] .panelResizeHandle{
 }
 
 .toggleOn .toggleKnob{
-  transform: translateX(20px);
+  transform: translateX(18px);
 }
 
 .toggle:disabled{
@@ -414,27 +436,35 @@ label{
   font-size: 12px;
   color: var(--muted);
   display: grid;
-  gap: 6px;
+  gap: 5px;
+  min-width: 0;
 }
 
 select{
   appearance: none;
-  padding: 9px 10px;
+  padding: 8px 9px;
   border-radius: 10px;
   border: 1px solid var(--panelBorder);
   background: rgba(0,0,0,0.25);
   color: var(--text);
   outline: none;
+  width: 100%;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 input[type="number"],
 input[type="text"]{
-  padding: 9px 10px;
+  padding: 8px 9px;
   border-radius: 10px;
   border: 1px solid var(--panelBorder);
   background: rgba(0,0,0,0.25);
   color: var(--text);
   outline: none;
+  width: 100%;
+  min-width: 0;
 }
 
 input[type="range"]{
@@ -445,6 +475,12 @@ input[type="range"]{
   font-size: 12px;
   color: var(--muted);
   line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.selectCompact{
+  width: 84px;
+  justify-self: start;
 }
 
 .infoGrid{
@@ -614,7 +650,7 @@ input[type="range"]{
 }
 
 .iosSettingsPanel .controls{
-  gap: 12px;
+  gap: 10px;
 }
 
 .iosSettingsPanel .section{
@@ -630,7 +666,7 @@ input[type="range"]{
   font-size: 13px;
   font-weight: 700;
   letter-spacing: -0.01em;
-  padding: 11px 14px;
+  padding: 10px 12px;
   background: rgba(248, 250, 252, 0.82);
 }
 
@@ -640,14 +676,14 @@ input[type="range"]{
 
 .iosSettingsPanel .sectionBody{
   margin-top: 0;
-  padding: 10px 10px 12px;
-  gap: 8px;
+  padding: 9px 8px 10px;
+  gap: 7px;
 }
 
 .sectionSubheadRow{
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   margin-top: 2px;
 }
 
@@ -685,8 +721,12 @@ input[type="range"]{
 .iosSettingsPanel .tabs{
   background: #e9edf3;
   border-radius: 11px;
-  padding: 4px;
-  gap: 4px;
+  padding: 3px;
+  gap: 2px;
+}
+
+.iosSettingsPanel .tabs4{
+  gap: 2px;
 }
 
 .iosSettingsPanel .tab{
@@ -694,9 +734,9 @@ input[type="range"]{
   background: transparent;
   color: rgba(15, 23, 42, 0.74);
   border-radius: 8px;
-  font-size: 13px;
+  font-size: 11px;
   font-weight: 600;
-  padding: 8px 9px;
+  padding: 7px 4px;
 }
 
 .iosSettingsPanel .tabActive{
@@ -710,13 +750,13 @@ input[type="range"]{
   border: 1px solid rgba(15, 23, 42, 0.08);
   background: rgba(255, 255, 255, 0.92);
   border-radius: 12px;
-  padding: 9px 11px;
+  padding: 8px 10px;
   color: #0f172a;
   font-size: 13px;
 }
 
 .iosSettingsPanel label{
-  gap: 7px;
+  gap: 6px;
 }
 
 .iosSettingsPanel select,
@@ -739,7 +779,8 @@ input[type="range"]{
 }
 
 .iosSettingsPanel .toggleGrid2 .toggleRow{
-  min-height: 46px;
+  min-height: 42px;
+  padding: 8px 8px;
 }
 
 .iosSettingsPanel .toggleGrid2 .toggleRow > div:first-child{
