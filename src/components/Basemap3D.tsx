@@ -2674,14 +2674,16 @@ export default function Basemap3D(props: {
 
   useEffect(() => {
     const liveCam = normalizeCamera(graphDivRef.current?.layout?.scene?.camera);
+    const presetCam = normalizeCamera(props.cameraPreset?.camera);
     const currentCam =
+      (!didInitCameraRef.current ? presetCam : null) ??
       liveCam ??
       lastKnownCameraRef.current ??
       initialCameraRef.current ??
       DEFAULT_SCENE_CAMERA;
     if (currentCam) lastKnownCameraRef.current = currentCam;
     setPlotRenderData(data);
-    const sceneWithCam = {
+    const sceneWithCam: any = {
       ...((layout as any).scene ?? {}),
       camera: currentCam,
     };
@@ -2689,7 +2691,7 @@ export default function Basemap3D(props: {
       ...(layout as any),
       scene: sceneWithCam as any,
     });
-  }, [plotReactToken, data, layout]);
+  }, [data, layout, plotReactToken, props.cameraPreset?.camera]);
 
   const plotConfig = useMemo(
     () => ({
@@ -2714,7 +2716,10 @@ export default function Basemap3D(props: {
     }
     // Set a good initial view once; after that, user interactions are preserved via uirevision.
     try {
-      const cam = initialCameraRef.current ?? DEFAULT_SCENE_CAMERA;
+      const cam =
+        normalizeCamera(props.cameraPreset?.camera) ??
+        initialCameraRef.current ??
+        DEFAULT_SCENE_CAMERA;
       lastKnownCameraRef.current = cam;
       void Plotly.relayout(graphDiv, { "scene.camera": cam });
       // Persist the initial camera once so revisiting the page keeps the same view,
@@ -2728,7 +2733,7 @@ export default function Basemap3D(props: {
     } catch {
       // ignore
     }
-  }, []);
+  }, [props.cameraPreset?.camera]);
 
   const handleUpdate = useCallback((_: any, graphDiv: any) => {
     if (graphDiv) {

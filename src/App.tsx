@@ -460,6 +460,7 @@ const SEA_ICE_HEIGHT_M = 65;
 const SEA_ICE_OPACITY = 0.55;
 const MOBILE_PANEL_BREAKPOINT_PX = 820;
 const PANEL_SIZE_STORAGE_KEY = "gs_panel_size_v1";
+const HORIZONTAL_RENDERER_STORAGE_KEY = "gs_horizontal_renderer_v1";
 const PANEL_MIN_WIDTH = 300;
 const PANEL_MIN_HEIGHT = 320;
 const PANEL_MAX_WIDTH = 620;
@@ -469,6 +470,14 @@ const PANEL_SAFE_MIN_WIDTH = 240;
 const PANEL_SAFE_MIN_HEIGHT = 280;
 const PLOTLY_OVERVIEW_CAMERA = {
   eye: { x: 0.1, y: -1.95, z: 0.86 },
+  up: { x: 0, y: 0, z: 1 },
+};
+const HORIZONTAL_PLOTLY_OVERVIEW_CAMERA = {
+  eye: { x: 0.02, y: -1.72, z: 1.3 },
+  up: { x: 0, y: 0, z: 1 },
+};
+const DRAW_OVERVIEW_CAMERA = {
+  eye: { x: 0, y: -0.28, z: 2.45 },
   up: { x: 0, y: 0, z: 1 },
 };
 const ZONAL_OVERVIEW_CAMERA = {
@@ -895,6 +904,106 @@ function detectZeroHaloBoundaries(
   return { maskedRows, maskedCols };
 }
 
+function detectZeroHaloBoundaries2D(
+  values: number[][],
+  opts?: { checkRows?: boolean; checkCols?: boolean }
+): { maskedRows: Set<number>; maskedCols: Set<number> } {
+  const maskedRows = new Set<number>();
+  const maskedCols = new Set<number>();
+  const ny = values.length;
+  const nx = values[0]?.length ?? 0;
+  if (!ny || !nx) return { maskedRows, maskedCols };
+
+  const checkRows = opts?.checkRows !== false;
+  const checkCols = opts?.checkCols !== false;
+  const sparseHaloZeroFraction = 0.98;
+  const sparseHaloMaxNonZero = 4;
+
+  const summarizeRow = (row: number) => {
+    let finite = 0;
+    let zero = 0;
+    let nonZero = 0;
+    const src = values[row] ?? [];
+    for (let i = 0; i < nx; i++) {
+      const value = Number(src[i]);
+      if (!Number.isFinite(value)) continue;
+      finite += 1;
+      if (value === 0) zero += 1;
+      else nonZero += 1;
+    }
+    return { finite, zero, nonZero };
+  };
+
+  const summarizeCol = (col: number) => {
+    let finite = 0;
+    let zero = 0;
+    let nonZero = 0;
+    for (let j = 0; j < ny; j++) {
+      const value = Number(values[j]?.[col]);
+      if (!Number.isFinite(value)) continue;
+      finite += 1;
+      if (value === 0) zero += 1;
+      else nonZero += 1;
+    }
+    return { finite, zero, nonZero };
+  };
+
+  const countsLookLikeZeroHalo = (counts: { finite: number; zero: number; nonZero: number }) => {
+    if (counts.finite <= 0 || counts.zero <= 0) return false;
+    if (counts.nonZero === 0) return true;
+    return counts.zero / counts.finite >= sparseHaloZeroFraction && counts.nonZero <= sparseHaloMaxNonZero;
+  };
+
+  if (checkRows) {
+    for (let row = 0; row < ny; row++) {
+      if (!countsLookLikeZeroHalo(summarizeRow(row))) break;
+      maskedRows.add(row);
+    }
+    for (let row = ny - 1; row >= 0; row--) {
+      if (!countsLookLikeZeroHalo(summarizeRow(row))) break;
+      maskedRows.add(row);
+    }
+  }
+
+  if (checkCols) {
+    for (let col = 0; col < nx; col++) {
+      if (!countsLookLikeZeroHalo(summarizeCol(col))) break;
+      maskedCols.add(col);
+    }
+    for (let col = nx - 1; col >= 0; col--) {
+      if (!countsLookLikeZeroHalo(summarizeCol(col))) break;
+      maskedCols.add(col);
+    }
+  }
+
+  return { maskedRows, maskedCols };
+}
+
+function maskZeroHaloBoundaries2D(
+  values: number[][],
+  opts?: { checkRows?: boolean; checkCols?: boolean }
+): number[][] {
+  const ny = values.length;
+  const nx = values[0]?.length ?? 0;
+  if (!ny || !nx) return values;
+  const { maskedRows, maskedCols } = detectZeroHaloBoundaries2D(values, opts);
+  if (!maskedRows.size && !maskedCols.size) return values;
+  const out: number[][] = new Array(ny);
+  for (let j = 0; j < ny; j++) {
+    const src = values[j] ?? [];
+    if (maskedRows.has(j)) {
+      out[j] = new Array(nx).fill(Number.NaN);
+      continue;
+    }
+    const row = new Array<number>(nx);
+    for (let i = 0; i < nx; i++) {
+      row[i] = maskedCols.has(i) ? Number.NaN : Number(src[i]);
+    }
+    out[j] = row;
+  }
+  return out;
+}
+
 function classCenters(cmin: number, cmax: number, step: number) {
   if (!Number.isFinite(cmin) || !Number.isFinite(cmax) || !Number.isFinite(step) || step <= 0) return [];
   const min = Math.min(cmin, cmax);
@@ -1269,6 +1378,17 @@ export default function App() {
 
   const [viewMode, setViewMode] = useState<ViewMode>("horizontal");
   const [viewModeHover, setViewModeHover] = useState<Exclude<ViewMode, "eddies"> | null>(null);
+  const [horizontalRenderer, setHorizontalRenderer] = useState<Renderer3D>(() => {
+    try {
+      if (typeof window !== "undefined") {
+        const saved = window.localStorage.getItem(HORIZONTAL_RENDERER_STORAGE_KEY);
+        if (saved === "three" || saved === "plotly") return saved;
+      }
+    } catch {
+      // ignore
+    }
+    return "three";
+  });
   const [varId, setVarId] = useState<VarId>("T");
   const projectOn3d = true;
   const [overlayOpacity, setOverlayOpacity] = useState(0);
@@ -1283,6 +1403,13 @@ export default function App() {
   const [colorSettings, setColorSettings] = useState<Record<VarId, VarColorSettings>>(
     DEFAULT_COLOR_SETTINGS
   );
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(HORIZONTAL_RENDERER_STORAGE_KEY, horizontalRenderer);
+    } catch {
+      // ignore
+    }
+  }, [horizontalRenderer]);
   const [drawAutoColorRangeByVar, setDrawAutoColorRangeByVar] = useState<Record<VarId, boolean>>({
     T: true,
     S: true,
@@ -1383,9 +1510,7 @@ export default function App() {
   const [plotlyCameraNonce, setPlotlyCameraNonce] = useState(0);
   useEffect(() => {
     setShowWind(false);
-    if (viewMode !== "horizontal") {
-      setPlotlyCameraNonce((value) => value + 1);
-    }
+    setPlotlyCameraNonce((value) => value + 1);
   }, [viewMode]);
   useEffect(() => {
     try {
@@ -1986,7 +2111,11 @@ export default function App() {
       ViewMode,
       "eddies"
     >];
-  const showPlotlyPerformanceHint = viewMode === "transect" || viewMode === "draw" || viewMode === "class";
+  const showPlotlyPerformanceHint =
+    viewMode === "transect" ||
+    viewMode === "draw" ||
+    viewMode === "class" ||
+    (viewMode === "horizontal" && horizontalRenderer === "plotly");
   const drawTransectHint =
     !drawTransectArmed && drawTransectPoints.length < 2
       ? 'Draw mode is idle. Adjust the view angle first, then click "Draw line".'
@@ -2026,12 +2155,14 @@ export default function App() {
 
   const horizontalValuesMasked = useMemo(() => {
     if (!meta || !horizontalValues) return horizontalValues;
-    return applySpatialMaskToHorizontal(horizontalValues, meta.lon, meta.lat, spatialMask);
+    const boundaryMasked = maskZeroHaloBoundaries2D(horizontalValues, { checkRows: true, checkCols: true });
+    return applySpatialMaskToHorizontal(boundaryMasked, meta.lon, meta.lat, spatialMask);
   }, [horizontalValues, meta, spatialMask]);
 
   const transectValuesMasked = useMemo(() => {
     if (!transectValues || !activeTransectPath) return transectValues;
-    return applySpatialMaskToTransect(transectValues, activeTransectPath.lon, activeTransectPath.lat, spatialMask);
+    const boundaryMasked = maskZeroHaloBoundaries2D(transectValues, { checkRows: false, checkCols: true });
+    return applySpatialMaskToTransect(boundaryMasked, activeTransectPath.lon, activeTransectPath.lat, spatialMask);
   }, [activeTransectPath, spatialMask, transectValues]);
 
   const horizontalRender = useMemo<HorizontalGrid | null>(() => {
@@ -3165,7 +3296,7 @@ export default function App() {
     }));
   }, [horizontalValuesMasked, setDrawAutoColorRangeEnabled, transectValuesMasked, varId, viewMode]);
 
-  const effectiveRenderer3d: Renderer3D = viewMode === "horizontal" ? "three" : "plotly";
+  const effectiveRenderer3d: Renderer3D = viewMode === "horizontal" ? horizontalRenderer : "plotly";
 
   return (
     <div className="app">
@@ -3228,10 +3359,17 @@ export default function App() {
           eddyLayer={eddyLayer}
           transectField={transectField}
           cameraPreset={
-            viewMode !== "horizontal"
+            effectiveRenderer3d === "plotly"
               ? {
                   nonce: plotlyCameraNonce,
-                  camera: viewMode === "transect" ? ZONAL_OVERVIEW_CAMERA : PLOTLY_OVERVIEW_CAMERA,
+                  camera:
+                    viewMode === "horizontal"
+                      ? HORIZONTAL_PLOTLY_OVERVIEW_CAMERA
+                      : viewMode === "draw"
+                        ? DRAW_OVERVIEW_CAMERA
+                      : viewMode === "transect"
+                        ? ZONAL_OVERVIEW_CAMERA
+                        : PLOTLY_OVERVIEW_CAMERA,
                 }
               : undefined
           }
@@ -3469,6 +3607,41 @@ export default function App() {
                           End: {drawTransectPoints[1].lon.toFixed(2)}°, {drawTransectPoints[1].lat.toFixed(2)}°N
                         </div>
                       ) : null}
+                    </>
+                  ) : null}
+                  {viewMode === "horizontal" ? (
+                    <>
+                      <label>
+                        Viewer
+                        <div
+                          style={{
+                            display: "grid",
+                            gridTemplateColumns: "minmax(0, 1fr) 118px",
+                            alignItems: "center",
+                            gap: 8,
+                          }}
+                        >
+                          <div className="tabs">
+                            <button
+                              type="button"
+                              className={`tab ${horizontalRenderer === "three" ? "tabActive" : ""}`}
+                              onClick={() => setHorizontalRenderer("three")}
+                            >
+                              Three
+                            </button>
+                            <button
+                              type="button"
+                              className={`tab ${horizontalRenderer === "plotly" ? "tabActive" : ""}`}
+                              onClick={() => setHorizontalRenderer("plotly")}
+                            >
+                              Plotly
+                            </button>
+                          </div>
+                          <div className="hint" style={{ margin: 0, lineHeight: 1.25 }}>
+                            Three is smoother, Plotly is heavier.
+                          </div>
+                        </div>
+                      </label>
                     </>
                   ) : null}
                   <div className="hint">{viewModeDescription}</div>
