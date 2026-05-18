@@ -38,6 +38,26 @@ type HorizontalField = {
   maskDryByBathy?: boolean;
 };
 
+type IsoSurfaceLayer = {
+  enabled: boolean;
+  lon: number[];
+  lat: number[];
+  depth: number[][];
+  value: number[][];
+  cmin: number;
+  cmax: number;
+  colorscale: Array<[number, string]>;
+  opacity?: number;
+  showScale?: boolean;
+  colorbarTitle?: string;
+  colorbarTicks?: number[];
+  colorbarTickText?: string[];
+  colorbarLen?: number;
+  colorbarX?: number;
+  colorbarY?: number;
+  valueTitle?: string;
+};
+
 type GuidePath = {
   enabled: boolean;
   lon: number[];
@@ -448,6 +468,93 @@ function buildScalarPlaneMesh(opts: {
   return overlay;
 }
 
+function buildIsoDepthMesh(opts: {
+  layer: IsoSurfaceLayer;
+  frame: MeshFrame;
+  verticalScale: number;
+  maxVertices?: number;
+}): THREE.Mesh | null {
+  const { layer, frame, verticalScale, maxVertices = TARGET_FIELD_VERTICES } = opts;
+  const nyFull = layer.depth.length;
+  const nxFull = Array.isArray(layer.depth[0]) ? layer.depth[0].length : 0;
+  if (nyFull < 2 || nxFull < 2) return null;
+  if (layer.lon.length !== nxFull || layer.lat.length !== nyFull) return null;
+  const cmin = Number(layer.cmin);
+  const cmax = Number(layer.cmax);
+  if (!Number.isFinite(cmin) || !Number.isFinite(cmax) || cmax <= cmin) return null;
+  const stops = toColorscaleStops(layer.colorscale);
+  const opacity = clamp(Number(layer.opacity ?? 0.7), 0, 1);
+  const lonSpan = Math.max(1e-9, frame.lonMax - frame.lonMin);
+  const latSpan = Math.max(1e-9, frame.latMax - frame.latMin);
+
+  const stride = pickStride(layer.lon.length, layer.lat.length, maxVertices);
+  const xIdx = buildSampleIndices(layer.lon.length, stride);
+  const yIdx = buildSampleIndices(layer.lat.length, stride);
+
+  const positions: number[] = [];
+  const colors: number[] = [];
+  const toX = (lon: number) => ((lon - frame.lonMin) / lonSpan - 0.5) * frame.width;
+  const toY = (lat: number) => ((lat - frame.latMin) / latSpan - 0.5) * frame.height;
+  const toColor = (depth: number) =>
+    colorFromScaleStops(stops, clamp((depth - cmin) / Math.max(1e-9, cmax - cmin), 0, 1));
+
+  for (let j = 0; j < yIdx.length - 1; j += 1) {
+    const j0 = yIdx[j];
+    const j1 = yIdx[j + 1];
+    for (let i = 0; i < xIdx.length - 1; i += 1) {
+      const i0 = xIdx[i];
+      const i1 = xIdx[i + 1];
+      const d00 = Number(layer.depth[j0]?.[i0]);
+      const d10 = Number(layer.depth[j0]?.[i1]);
+      const d01 = Number(layer.depth[j1]?.[i0]);
+      const d11 = Number(layer.depth[j1]?.[i1]);
+      if (!Number.isFinite(d00) || !Number.isFinite(d10) || !Number.isFinite(d01) || !Number.isFinite(d11)) continue;
+
+      const x00 = toX(Number(layer.lon[i0]));
+      const x10 = toX(Number(layer.lon[i1]));
+      const x01 = x00;
+      const x11 = x10;
+      const y00 = toY(Number(layer.lat[j0]));
+      const y10 = y00;
+      const y01 = toY(Number(layer.lat[j1]));
+      const y11 = y01;
+      const c00 = toColor(d00);
+      const c10 = toColor(d10);
+      const c01 = toColor(d01);
+      const c11 = toColor(d11);
+
+      positions.push(x00, y00, d00, x10, y10, d10, x01, y01, d01);
+      colors.push(c00.r, c00.g, c00.b, c10.r, c10.g, c10.b, c01.r, c01.g, c01.b);
+      positions.push(x10, y10, d10, x11, y11, d11, x01, y01, d01);
+      colors.push(c10.r, c10.g, c10.b, c11.r, c11.g, c11.b, c01.r, c01.g, c01.b);
+    }
+  }
+
+  if (positions.length < 9) return null;
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
+  geometry.computeVertexNormals();
+  geometry.computeBoundingSphere();
+
+  const material = new THREE.MeshStandardMaterial({
+    vertexColors: true,
+    side: THREE.DoubleSide,
+    transparent: true,
+    opacity,
+    roughness: 0.92,
+    metalness: 0.04,
+    depthWrite: false,
+    polygonOffset: true,
+    polygonOffsetFactor: -2,
+    polygonOffsetUnits: -2,
+  });
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.scale.z = verticalScale;
+  mesh.renderOrder = 7;
+  return mesh;
+}
+
 export default function BasemapThree(props: {
   bathySource?: "model" | "rtopo";
   bathyPalette?: RGB[];
@@ -467,6 +574,7 @@ export default function BasemapThree(props: {
   showBathy?: boolean;
   horizontalField?: HorizontalField;
   horizontalPlanes?: HorizontalField[];
+  isoSurfaceLayer?: IsoSurfaceLayer;
   windLayer?: WindLayer;
   guidePath?: GuidePath;
   onSurfacePick?: (pick: { lon: number; lat: number }) => void;
@@ -494,6 +602,7 @@ export default function BasemapThree(props: {
   const meshRef = useRef<THREE.Mesh | null>(null);
   const overlayRef = useRef<THREE.Mesh | null>(null);
   const overlayPlanesRef = useRef<THREE.Group | null>(null);
+  const isoSurfaceRef = useRef<THREE.Mesh | null>(null);
   const guideRef = useRef<THREE.Object3D | null>(null);
   const windCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const animationRef = useRef<number | null>(null);
@@ -840,14 +949,17 @@ export default function BasemapThree(props: {
         disposeObject(meshRef.current);
         disposeObject(overlayRef.current);
         disposeObject(overlayPlanesRef.current);
+        disposeObject(isoSurfaceRef.current);
         disposeObject(guideRef.current);
         meshRef.current?.parent?.remove(meshRef.current);
         overlayRef.current?.parent?.remove(overlayRef.current);
         overlayPlanesRef.current?.parent?.remove(overlayPlanesRef.current);
+        isoSurfaceRef.current?.parent?.remove(isoSurfaceRef.current);
         guideRef.current?.parent?.remove(guideRef.current);
         meshRef.current = null;
         overlayRef.current = null;
         overlayPlanesRef.current = null;
+        isoSurfaceRef.current = null;
         guideRef.current = null;
         meshAxesRef.current = null;
         meshDepthRef.current = null;
@@ -903,6 +1015,7 @@ export default function BasemapThree(props: {
     if (mesh) mesh.scale.z = verticalScale;
     if (overlayRef.current) overlayRef.current.scale.z = verticalScale;
     if (overlayPlanesRef.current) overlayPlanesRef.current.scale.z = verticalScale;
+    if (isoSurfaceRef.current) isoSurfaceRef.current.scale.z = verticalScale;
   }, [verticalScale]);
 
   useEffect(() => {
@@ -1056,6 +1169,9 @@ export default function BasemapThree(props: {
     overlayPlanesRef.current?.parent?.remove(overlayPlanesRef.current);
     disposeObject(overlayPlanesRef.current);
     overlayPlanesRef.current = null;
+    isoSurfaceRef.current?.parent?.remove(isoSurfaceRef.current);
+    disposeObject(isoSurfaceRef.current);
+    isoSurfaceRef.current = null;
 
     if (!scene || !frame || !meshAxes || !meshDepth) return;
     const field = props.horizontalField;
@@ -1098,7 +1214,19 @@ export default function BasemapThree(props: {
         disposeObject(group);
       }
     }
-  }, [meshFrameNonce, props.horizontalField, props.horizontalPlanes, verticalScale]);
+    const isoSurface = props.isoSurfaceLayer;
+    if (isoSurface?.enabled) {
+      const mesh = buildIsoDepthMesh({
+        layer: isoSurface,
+        frame,
+        verticalScale,
+      });
+      if (mesh) {
+        scene.add(mesh);
+        isoSurfaceRef.current = mesh;
+      }
+    }
+  }, [meshFrameNonce, props.horizontalField, props.horizontalPlanes, props.isoSurfaceLayer, verticalScale]);
 
   const colorbars = useMemo<ColorbarViewModel[]>(() => {
     const out: ColorbarViewModel[] = [];
@@ -1158,6 +1286,33 @@ export default function BasemapThree(props: {
       });
     }
 
+    const isoSurface = props.isoSurfaceLayer;
+    if (
+      isoSurface?.enabled &&
+      isoSurface.showScale &&
+      Number.isFinite(isoSurface.cmin) &&
+      Number.isFinite(isoSurface.cmax) &&
+      isoSurface.cmax > isoSurface.cmin &&
+      Array.isArray(isoSurface.colorscale) &&
+      isoSurface.colorscale.length
+    ) {
+      const ticks = isoSurface.colorbarTicks?.length
+        ? isoSurface.colorbarTicks.filter((v) => Number.isFinite(v))
+        : makeAutoTicks(isoSurface.cmin, isoSurface.cmax, 6);
+      out.push({
+        id: "iso-surface",
+        title: isoSurface.colorbarTitle ?? "Value",
+        gradient: colorscaleToCssGradient(isoSurface.colorscale),
+        min: isoSurface.cmin,
+        max: isoSurface.cmax,
+        ticks,
+        tickText: isoSurface.colorbarTickText?.length
+          ? isoSurface.colorbarTickText
+          : formatColorbarTickText(ticks, isoSurface.colorbarTitle ?? "Value"),
+        len: clamp(Number(isoSurface.colorbarLen ?? 0.62), 0.25, 0.95),
+      });
+    }
+
     if (
       props.bathyColorbar?.enabled &&
       (props.showBathy ?? true) &&
@@ -1181,7 +1336,15 @@ export default function BasemapThree(props: {
     }
 
     return out;
-  }, [bathyPalette, bathyRange, props.bathyColorbar, props.horizontalField, props.horizontalPlanes, props.showBathy]);
+  }, [
+    bathyPalette,
+    bathyRange,
+    props.bathyColorbar,
+    props.horizontalField,
+    props.horizontalPlanes,
+    props.isoSurfaceLayer,
+    props.showBathy,
+  ]);
 
   useEffect(() => {
     const mesh = meshRef.current;

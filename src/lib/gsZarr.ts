@@ -2,7 +2,7 @@ import * as zarr from "zarrita";
 import { withBase } from "./paths";
 
 export type GsZarrVariable = {
-  id: "T" | "S";
+  id: "T" | "S" | "rho";
   label: string;
   units?: string;
   available: boolean;
@@ -315,9 +315,10 @@ export async function loadGsZarrMeta(): Promise<GsZarrMeta> {
   })();
 
   const variables: GsZarrVariable[] = await Promise.all(
-    (["T", "S"] as const).map(async (id) => {
+    (["T", "S", "rho"] as const).map(async (id) => {
       const attrs = zmeta?.metadata?.[`${id}/.zattrs`];
-      const label = id === "T" ? "Temperature (T)" : "Salinity (S)";
+      const label =
+        id === "T" ? "Temperature (T)" : id === "S" ? "Salinity (S)" : "Potential density (rho)";
       const units = typeof attrs?.units === "string" ? attrs.units : undefined;
       try {
         // Probe by attempting to open (will 404 if missing).
@@ -354,7 +355,7 @@ export function nearestIndex(values: number[], target: number) {
 
 export async function loadHorizontalSlice(opts: {
   storeUrl: string;
-  varId: "T" | "S";
+  varId: "T" | "S" | "rho";
   tIndex: number;
   zIndex: number;
   nLat: number;
@@ -374,7 +375,7 @@ export async function loadHorizontalSlice(opts: {
 
 export async function loadTransectSlice(opts: {
   storeUrl: string;
-  varId: "T" | "S";
+  varId: "T" | "S" | "rho";
   tIndex: number;
   yIndex: number; // index into YC
 }): Promise<{ values: number[][] }> {
@@ -392,7 +393,7 @@ export async function loadTransectSlice(opts: {
 
 export async function load3DFieldAtTime(opts: {
   storeUrl: string;
-  varId: "T" | "S";
+  varId: "T" | "S" | "rho";
   tIndex: number;
 }): Promise<{ data: Float32Array; nz: number; ny: number; nx: number }> {
   const key = `${opts.storeUrl}|${opts.varId}|3d|${opts.tIndex}`;

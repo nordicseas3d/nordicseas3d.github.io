@@ -151,6 +151,193 @@ body[data-theme="day"] .mapFooterHint{
   pointer-events: none;
 }
 
+.tutorialModalWrap{
+  position: fixed;
+  inset: 0;
+  z-index: 8;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  padding: 18px;
+}
+
+.tutorialBackdrop{
+  position: fixed;
+  inset: 0;
+  background: rgba(4, 8, 16, 0.62);
+  pointer-events: auto;
+}
+
+.tutorialSpotlight{
+  position: fixed;
+  z-index: 1;
+  border-radius: 16px;
+  border: 2px solid rgba(103,232,249,0.92);
+  box-shadow:
+    0 0 0 9999px rgba(4, 8, 16, 0.18),
+    0 0 0 1px rgba(255,255,255,0.18) inset,
+    0 0 14px rgba(103,232,249,0.18);
+  pointer-events: none;
+}
+
+.tutorialConnector{
+  position: fixed;
+  inset: 0;
+  z-index: 2;
+  width: 100vw;
+  height: 100vh;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.tutorialConnector line{
+  stroke: rgba(103,232,249,0.92);
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  filter: drop-shadow(0 0 8px rgba(103,232,249,0.28));
+}
+
+.tutorialCard{
+  position: relative;
+  z-index: 1;
+  width: min(440px, calc(100vw - 36px));
+  max-height: min(78vh, 640px);
+  padding: 18px 18px 16px;
+  display: grid;
+  gap: 14px;
+  overflow: auto;
+  pointer-events: auto;
+}
+
+.tutorialCardFloating{
+  position: fixed;
+  z-index: 3;
+  margin: 0;
+}
+
+.tutorialCardFloating::before{
+  content: "";
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  background: var(--panel);
+  border-left: 1px solid var(--panelBorder);
+  border-top: 1px solid var(--panelBorder);
+  transform: rotate(45deg);
+  backdrop-filter: blur(10px);
+}
+
+.tutorialCardFloating[data-placement="right"]::before{
+  left: -8px;
+  top: calc(50% - 8px);
+}
+
+.tutorialCardFloating[data-placement="left"]::before{
+  right: -8px;
+  top: calc(50% - 8px);
+  transform: rotate(225deg);
+}
+
+.tutorialCardFloating[data-placement="top"]::before{
+  left: calc(50% - 8px);
+  bottom: -8px;
+  transform: rotate(225deg);
+}
+
+.tutorialCardFloating[data-placement="bottom"]::before{
+  left: calc(50% - 8px);
+  top: -8px;
+  transform: rotate(45deg);
+}
+
+.tutorialHeader{
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.tutorialEyebrow{
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.tutorialTitle{
+  margin: 4px 0 0;
+  font-size: 22px;
+  line-height: 1.1;
+  color: var(--text);
+}
+
+.tutorialBody{
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text);
+}
+
+.tutorialPoints{
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0 0 0 18px;
+  color: var(--muted);
+}
+
+.tutorialPoint{
+  line-height: 1.45;
+}
+
+.tutorialActions{
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.tutorialSpacer{
+  flex: 1;
+}
+
+.tutorialButton{
+  cursor: pointer;
+  padding: 9px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--panelBorder);
+  background: rgba(255,255,255,0.06);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.tutorialButtonPrimary{
+  border-color: rgba(103,232,249,0.40);
+  background: linear-gradient(180deg, rgba(103,232,249,0.14), rgba(167,139,250,0.08));
+}
+
+.tutorialButton:disabled{
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+body[data-theme="day"] .tutorialBackdrop{
+  background: rgba(15, 23, 42, 0.26);
+}
+
+body[data-theme="day"] .tutorialSpotlight{
+  box-shadow:
+    0 0 0 9999px rgba(15, 23, 42, 0.12),
+    0 0 0 1px rgba(255,255,255,0.26) inset,
+    0 0 24px rgba(37,99,235,0.22);
+}
+
+body[data-theme="day"] .tutorialButton{
+  background: rgba(255,255,255,0.68);
+}
+
 .panel{
   pointer-events: auto;
   background: var(--panel);
@@ -344,6 +531,11 @@ body[data-theme="day"] .panelResizeHandle{
 .tabs4{
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.tabs5{
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
 }
 
 .tab{
@@ -725,7 +917,8 @@ input[type="range"]{
   gap: 2px;
 }
 
-.iosSettingsPanel .tabs4{
+.iosSettingsPanel .tabs4,
+.iosSettingsPanel .tabs5{
   gap: 2px;
 }
 

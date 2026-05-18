@@ -162,6 +162,26 @@ type EddyLayer = {
   showLegend?: boolean;
 };
 
+type IsoSurfaceLayer = {
+  enabled: boolean;
+  lon: number[];
+  lat: number[];
+  depth: number[][];
+  value: number[][];
+  cmin: number;
+  cmax: number;
+  colorscale: Array<[number, string]>;
+  opacity?: number;
+  showScale?: boolean;
+  colorbarTitle?: string;
+  colorbarTicks?: number[];
+  colorbarTickText?: string[];
+  colorbarLen?: number;
+  colorbarX?: number;
+  colorbarY?: number;
+  valueTitle?: string;
+};
+
 type WindParticle = {
   x: number;
   y: number;
@@ -585,6 +605,7 @@ export default function Basemap3D(props: {
   windLayer?: WindLayer;
   classLayer?: ClassLayer;
   eddyLayer?: EddyLayer;
+  isoSurfaceLayer?: IsoSurfaceLayer;
   onSurfacePick?: (pick: { lon: number; lat: number }) => void;
   onSurfaceHover?: (pick: { lon: number; lat: number } | null) => void;
   viewerHint?: string;
@@ -2291,6 +2312,60 @@ export default function Basemap3D(props: {
       }
     }
 
+    if (props.isoSurfaceLayer?.enabled) {
+      const layer = props.isoSurfaceLayer;
+      if (layer.lon.length && layer.lat.length && layer.depth.length && layer.value.length) {
+        const zSurface = layer.depth.map((row) =>
+          row.map((depth) => (Number.isFinite(Number(depth)) ? scaleZ(Number(depth)) : Number.NaN))
+        );
+        const hoverText = layer.value.map((row, j) =>
+          row.map((val, i) => {
+            const depth = Number(layer.depth?.[j]?.[i]);
+            const valueText = Number.isFinite(Number(val)) ? Number(val).toFixed(3) : "n/a";
+            const depthText = Number.isFinite(depth) ? `${depth.toFixed(0)} m` : "n/a";
+            return (
+              `Lon ${Number(layer.lon[i]).toFixed(2)}°<br>` +
+              `Lat ${Number(layer.lat[j]).toFixed(2)}°<br>` +
+              `Depth ${depthText}<br>` +
+              `${layer.valueTitle ?? "Value"}: ${valueText}`
+            );
+          })
+        );
+        traces.push({
+          type: "surface",
+          name: layer.colorbarTitle ?? "Isosurface",
+          x: layer.lon as any,
+          y: layer.lat as any,
+          z: zSurface as any,
+          surfacecolor: layer.depth as any,
+          hovertext: hoverText as any,
+          cmin: layer.cmin,
+          cmax: layer.cmax,
+          cauto: false,
+          colorscale: layer.colorscale as any,
+          opacity: Math.max(0.1, Math.min(1, Number(layer.opacity ?? 0.68))),
+          lighting: { ambient: 0.98, diffuse: 0.3, specular: 0.04, roughness: 0.92 } as any,
+          flatshading: false as any,
+          showscale: Boolean(layer.showScale),
+          ...(layer.showScale
+            ? {
+                colorbar: {
+                  ...makeColorbarConfig({
+                    title: layer.colorbarTitle ?? "Isosurface",
+                    tickvals: layer.colorbarTicks,
+                    ticktext: layer.colorbarTickText,
+                    len: layer.colorbarLen,
+                    x: layer.colorbarX,
+                    y: layer.colorbarY,
+                  }),
+                } as any,
+              }
+            : null),
+          hoverinfo: "text",
+        });
+      }
+    }
+
     const guidePath = props.guidePath?.enabled ? props.guidePath : null;
     if (guidePath?.lon.length && guidePath.lat.length === guidePath.lon.length) {
       const zGuide = scaleZ(Number.isFinite(Number(guidePath.zPlane)) ? Number(guidePath.zPlane) : 8);
@@ -2445,6 +2520,7 @@ export default function Basemap3D(props: {
     props.windLayer,
     props.classLayer,
     props.eddyLayer,
+    props.isoSurfaceLayer,
     activeBathyPalette,
     props.bathyOpacity,
     props.bathyColorbar?.enabled,
