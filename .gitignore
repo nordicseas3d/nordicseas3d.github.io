@@ -6,6 +6,8 @@ dist
 
 # Large local datasets (keep out of Git unless using LFS)
 public/data/*.zarr/
+!public/data/nordic.zarr/
+!public/data/nordic.zarr/**
 public/data/*.nc
 public/data/bathy_RTopo.json
 public/data/bathy_RTopo_ds.json

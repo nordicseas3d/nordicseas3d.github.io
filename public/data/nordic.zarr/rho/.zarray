@@ -1,0 +1,27 @@
+{
+  "shape": [
+    73,
+    72,
+    312,
+    320
+  ],
+  "chunks": [
+    1,
+    24,
+    312,
+    320
+  ],
+  "dtype": "<f8",
+  "fill_value": "NaN",
+  "order": "C",
+  "filters": null,
+  "dimension_separator": ".",
+  "compressor": {
+    "id": "blosc",
+    "cname": "zstd",
+    "clevel": 3,
+    "shuffle": 2,
+    "blocksize": 0
+  },
+  "zarr_format": 2
+}
