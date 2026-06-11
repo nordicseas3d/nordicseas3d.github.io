@@ -114,6 +114,9 @@ type ClassTrace = {
   z: number[];
 };
 
+type IsoRenderMode = "sheet" | "volumeSplit";
+type IsoVolumeStyle = "cloud" | "fill";
+
 type EddyClusterRender = {
   id: string;
   kind: "warm" | "cold";
@@ -129,6 +132,9 @@ type EddyClusterRender = {
 type IsoSurfaceSettings = {
   value: number;
   opacity: number;
+  renderMode: IsoRenderMode;
+  volumeDensity: number;
+  volumeStyle: IsoVolumeStyle;
 };
 
 type IsoSurfaceInputSettings = {
@@ -140,6 +146,25 @@ type IsoSurfaceRender = {
   lat: number[];
   depth: number[][];
   value: number[][];
+};
+
+type IsoVolumeBodiesRender = {
+  lon: number[];
+  lat: number[];
+  interfaceDepth: number[][];
+  shallowColor: string;
+  deepColor: string;
+  opacity: number;
+};
+
+type IsoVolumeClassRender = {
+  traces: ClassTrace[];
+  cmin: number;
+  cmax: number;
+  colorscale: Array<[number, string]>;
+  colorbarTitle: string;
+  colorbarTicks: number[];
+  colorbarTickText: string[];
 };
 
 type TutorialTargetId = "panel" | "variables" | "tempo" | "draw" | "class" | "isosurface" | "masks";
@@ -184,7 +209,7 @@ const VIEW_MODE_DESCRIPTIONS: Record<Exclude<ViewMode, "eddies">, string> = {
   class:
     "Class: show 3D point clouds for value bands through the water column. Set class range and density under View, define color scheme under Color scale.",
   isosurface:
-    "Isosurface: tune a target value and visualize the corresponding isothermal, isohaline, or isopycnal surface through the 3D volume.",
+    "Isosurface: tune a target value and visualize either the corresponding isothermal, isohaline, or isopycnal sheet, or a two-class volume split around that threshold.",
 };
 
 const TUTORIAL_STEPS: TutorialStep[] = [
@@ -246,11 +271,11 @@ const TUTORIAL_STEPS: TutorialStep[] = [
   {
     id: "isosurface",
     title: "Isosurfaces",
-    body: "Isosurface mode shows the shallowest depth where the selected variable reaches a target value.",
+    body: "Isosurface mode can show either the shallowest depth where the selected variable reaches a target value, or a two-class volume split around that threshold.",
     target: "isosurface",
     placement: "right",
     points: [
-      "The surface is colored by depth, while hover still reports the selected Temperature, Salinity, or Potential density value.",
+      "Surface sheet colors by depth, while volume split samples the full 3D field into below-threshold and above-threshold classes.",
       "You can switch between Plotly and the experimental Three viewer inside this mode.",
     ],
   },
@@ -583,6 +608,7 @@ const DEFAULT_FIELD_COLORMAP: Record<VarId, FieldColormapId> = {
   S: "rdylbu_r",
   rho: "viridis",
 };
+const DEFAULT_INTERFACE_COLORMAP: FieldColormapId = "plasma";
 
 const DEFAULT_BATHY_SOURCE: BathySourceId = "model";
 const DEFAULT_BATHY_COLORMAP: BathyColormapId = "bed_elevation";
@@ -641,9 +667,9 @@ const CLASS_HALF_WIDTH_OPTIONS: Record<VarId, number[]> = {
 };
 
 const DEFAULT_ISOSURFACE_SETTINGS: Record<VarId, IsoSurfaceSettings> = {
-  T: { value: 4, opacity: 0.62 },
-  S: { value: 35, opacity: 0.62 },
-  rho: { value: 27.8, opacity: 0.62 },
+  T: { value: 4, opacity: 0.62, renderMode: "sheet", volumeDensity: CLASS_DENSITY_DEFAULT, volumeStyle: "fill" },
+  S: { value: 35, opacity: 0.62, renderMode: "sheet", volumeDensity: CLASS_DENSITY_DEFAULT, volumeStyle: "fill" },
+  rho: { value: 27.8, opacity: 0.62, renderMode: "sheet", volumeDensity: CLASS_DENSITY_DEFAULT, volumeStyle: "fill" },
 };
 
 const SEA_ICE_THRESHOLD = 0.3;
@@ -812,6 +838,53 @@ function parseFiniteNumberInput(raw: string): number | null {
 function clampClassDensity(value: number) {
   if (!Number.isFinite(value)) return CLASS_DENSITY_DEFAULT;
   return clamp(value, CLASS_DENSITY_MIN, CLASS_DENSITY_MAX);
+}
+
+function formatIsoValue(varId: VarId, value: number) {
+  return value.toFixed(varId === "T" ? 1 : 2);
+}
+
+function splitClassLabels(varId: VarId, threshold: number) {
+  const thresholdText = formatIsoValue(varId, threshold);
+  if (varId === "rho") {
+    return {
+      below: `Light (< ${thresholdText})`,
+      above: `Dense (>= ${thresholdText})`,
+      title: "Density class",
+    };
+  }
+  return {
+    below: `Below ${thresholdText}`,
+    above: `Above ${thresholdText}`,
+    title: `${variableDisplayLabel(varId)} class`,
+  };
+}
+
+function buildThresholdSplitColorscale(): Array<[number, string]> {
+  const below = "rgb(34, 197, 94)";
+  const above = "rgb(244, 63, 94)";
+  return [
+    [0, below],
+    [0.499999, below],
+    [0.5, above],
+    [1, above],
+  ];
+}
+
+function thresholdSplitColors() {
+  return {
+    shallow: "rgb(34, 197, 94)",
+    deep: "rgb(244, 63, 94)",
+  };
+}
+
+function buildIsoDepthColorscale(): Array<[number, string]> {
+  return [
+    [0, "rgb(29, 11, 89)"],
+    [0.32, "rgb(91, 33, 182)"],
+    [0.68, "rgb(192, 38, 211)"],
+    [1, "rgb(251, 113, 133)"],
+  ];
 }
 
 function sampleIndices(length: number, targetCount: number) {
@@ -1127,6 +1200,105 @@ function buildIsoSurfaceSheet(opts: {
   }
 
   return { lon: lonOut, lat: latOut, depth: depthOut, value: valueOut };
+}
+
+function buildIsoThresholdClasses(opts: {
+  data: Float32Array;
+  nz: number;
+  ny: number;
+  nx: number;
+  lon: number[];
+  lat: number[];
+  z: number[];
+  varId: VarId;
+  threshold: number;
+  spatialMask: SpatialMaskState;
+  playing: boolean;
+  density: number;
+}): IsoVolumeClassRender {
+  const { data, nz, ny, nx, lon, lat, z, varId, threshold, spatialMask, playing, density } = opts;
+  const sampleDensity = clampClassDensity(density);
+  const nxLimit = Math.max(8, Math.round((playing ? CLASS_MAX_XY_PLAYING : CLASS_MAX_XY_PAUSED) * sampleDensity));
+  const nyLimit = Math.max(8, Math.round((playing ? CLASS_MAX_XY_PLAYING : CLASS_MAX_XY_PAUSED) * sampleDensity));
+  const nzLimit = Math.max(4, Math.round((playing ? CLASS_MAX_Z_PLAYING : CLASS_MAX_Z_PAUSED) * sampleDensity));
+  const xIdx = sampleIndices(nx, nxLimit);
+  const yIdx = sampleIndices(ny, nyLimit);
+  const zIdx = sampleIndices(nz, nzLimit);
+  const { maskedRows, maskedCols } = detectZeroHaloBoundaries(data, nz, ny, nx);
+  const zeroMasked = isZeroMaskedVar(varId);
+  const perClassCap = Math.max(
+    120,
+    Math.round((playing ? CLASS_POINTS_PER_CLASS_PLAYING : CLASS_POINTS_PER_CLASS_PAUSED) * sampleDensity)
+  );
+  const labels = splitClassLabels(varId, threshold);
+  const traces = [
+    {
+      value: 0,
+      label: labels.below,
+      x: [] as number[],
+      y: [] as number[],
+      z: [] as number[],
+      seen: 0,
+      rand: 0x9e3779b9 >>> 0,
+    },
+    {
+      value: 1,
+      label: labels.above,
+      x: [] as number[],
+      y: [] as number[],
+      z: [] as number[],
+      seen: 0,
+      rand: 0x85ebca6b >>> 0,
+    },
+  ];
+
+  for (let zk = 0; zk < zIdx.length; zk++) {
+    const zIndex = zIdx[zk];
+    const depth = Number(z[zIndex]);
+    if (!Number.isFinite(depth)) continue;
+    for (let yk = 0; yk < yIdx.length; yk++) {
+      const yIndex = yIdx[yk];
+      if (maskedRows.has(yIndex)) continue;
+      const latValue = Number(lat[yIndex]);
+      if (!Number.isFinite(latValue)) continue;
+      for (let xk = 0; xk < xIdx.length; xk++) {
+        const xIndex = xIdx[xk];
+        if (maskedCols.has(xIndex)) continue;
+        const lonValue = Number(lon[xIndex]);
+        if (!Number.isFinite(lonValue)) continue;
+        if (!pointPassesSpatialMask(lonValue, latValue, spatialMask)) continue;
+        const sample = Number(data[zIndex * ny * nx + yIndex * nx + xIndex]);
+        if (!Number.isFinite(sample) || (zeroMasked && sample === 0)) continue;
+        const bucket = sample < threshold ? traces[0] : traces[1];
+        bucket.seen += 1;
+        if (bucket.x.length < perClassCap) {
+          bucket.x.push(lonValue);
+          bucket.y.push(latValue);
+          bucket.z.push(depth);
+        } else {
+          bucket.rand = (1664525 * bucket.rand + 1013904223) >>> 0;
+          const replace = bucket.rand % bucket.seen;
+          if (replace < perClassCap) {
+            bucket.x[replace] = lonValue;
+            bucket.y[replace] = latValue;
+            bucket.z[replace] = depth;
+          }
+        }
+      }
+    }
+  }
+
+  return {
+    traces: traces
+      .filter((trace) => trace.x.length > 0)
+      .map((trace) => ({ label: trace.label, value: trace.value, x: trace.x, y: trace.y, z: trace.z })),
+    cmin: 0,
+    cmax: 1,
+    colorscale: buildThresholdSplitColorscale(),
+    colorbarTitle: labels.title,
+    colorbarTicks: [0, 1],
+    colorbarTickText: [labels.below, labels.above],
+  };
 }
 
 function detectZeroHaloBoundaries(
@@ -1760,6 +1932,7 @@ export default function App() {
   const [fieldColormapByVar, setFieldColormapByVar] = useState<Record<VarId, FieldColormapId>>(
     DEFAULT_FIELD_COLORMAP
   );
+  const [interfaceColormap, setInterfaceColormap] = useState<FieldColormapId>(DEFAULT_INTERFACE_COLORMAP);
   const [bathyColormap, setBathyColormap] = useState<BathyColormapId>(DEFAULT_BATHY_COLORMAP);
 
   const [colorInputByVar, setColorInputByVar] = useState<Record<VarId, ClassInputSettings>>({
@@ -1940,6 +2113,7 @@ export default function App() {
   const [transectLatActual, setTransectLatActual] = useState<number | null>(null);
   const [classTraces, setClassTraces] = useState<ClassTrace[] | null>(null);
   const [isoSurfaceVolume, setIsoSurfaceVolume] = useState<IsoSurfaceRender | null>(null);
+  const [isoVolumeClasses, setIsoVolumeClasses] = useState<IsoVolumeClassRender | null>(null);
   const [eddyDetection, setEddyDetection] = useState<EddyDetectionResult | null>(null);
   const [eddyVolume, setEddyVolume] = useState<EddyVolumeCluster[] | null>(null);
   const [seaIceValues, setSeaIceValues] = useState<number[][] | null>(null);
@@ -1999,6 +2173,8 @@ export default function App() {
   const eddyMinCellCount = Math.max(6, Math.round(eddyMinCells));
   const fieldPalette = useMemo(() => paletteForColormapId(fieldColormapByVar[varId]), [fieldColormapByVar, varId]);
   const fieldContinuousColorscale = useMemo(() => paletteToColorscale(fieldPalette), [fieldPalette]);
+  const interfacePalette = useMemo(() => paletteForColormapId(interfaceColormap), [interfaceColormap]);
+  const interfaceColorscale = useMemo(() => paletteToColorscale(interfacePalette), [interfacePalette]);
   const bathyPalette = useMemo(() => paletteForColormapId(bathyColormap), [bathyColormap]);
   const colorscale = useMemo(() => {
     return settings.mode === "discrete"
@@ -2065,6 +2241,13 @@ export default function App() {
           : { x: 1.03, y: 0.50, len: 0.84 },
     [isMobileViewport, scalarColorbarLen, showColorbarActive]
   );
+  const secondaryColorbarLayout = useMemo(
+    () =>
+      isMobileViewport
+        ? { x: 0.90, y: 0.50, len: hasSeaIceColorbar ? scalarColorbarLen : 0.66 }
+        : { x: 1.14, y: 0.50, len: hasSeaIceColorbar ? scalarColorbarLen : 0.84 },
+    [hasSeaIceColorbar, isMobileViewport, scalarColorbarLen]
+  );
 
   const timeList = meta?.timeIso ?? [];
   const zList = meta?.z ?? [];
@@ -2091,7 +2274,9 @@ export default function App() {
   const activeOverlayText = activeOverlaySummary.length
     ? ` ${activeOverlaySummary.join(" and ")} ${activeOverlaySummary.length === 1 ? "is" : "are"} on.`
     : "";
-  const isoValueLabel = isoSurfaceSettings.value.toFixed(varId === "T" ? 1 : 2);
+  const isoValueLabel = formatIsoValue(varId, isoSurfaceSettings.value);
+  const isoRenderMode = isoSurfaceSettings.renderMode;
+  const isoSplitLabels = splitClassLabels(varId, isoSurfaceSettings.value);
   const horizontalModeLabel = overlayOpacity > 0.001 ? range.title : "Topography";
   const drawMapInstruction =
     drawTransectPoints.length >= 2
@@ -2111,8 +2296,10 @@ export default function App() {
           : viewMode === "class"
             ? `Class mode is showing ${range.title} point-cloud classes between ${classMin} and ${classMax} at ${activeTimeLabel}.${activeOverlayText}`
             : viewMode === "isosurface"
-              ? `Isosurface mode is showing the ${isoValueLabel} ${variableDisplayLabel(varId).toLowerCase()} surface at ${activeTimeLabel}.${activeOverlayText}`
-            : `Eddy mode is showing eddy detections at ${activeTimeLabel}.${activeOverlayText}`;
+              ? isoRenderMode === "volumeSplit"
+                ? `${isoSurfaceSettings.volumeStyle === "fill" ? "Isosurface mode is rendering a filled" : "Isosurface mode is splitting the"} ${variableDisplayLabel(varId).toLowerCase()} volume at ${isoValueLabel} into ${isoSplitLabels.below.toLowerCase()} and ${isoSplitLabels.above.toLowerCase()} classes at ${activeTimeLabel}.${activeOverlayText}`
+                : `Isosurface mode is showing the ${isoValueLabel} ${variableDisplayLabel(varId).toLowerCase()} surface at ${activeTimeLabel}.${activeOverlayText}`
+              : `Eddy mode is showing eddy detections at ${activeTimeLabel}.${activeOverlayText}`;
   const timeCoverageLabel =
     timeList.length > 1 ? `${timeList[0]} to ${timeList[timeList.length - 1]}` : timeList[0] ?? "n/a";
   const depthCoverageLabel =
@@ -2950,6 +3137,7 @@ export default function App() {
       setTransectLatActual(null);
       setClassTraces(null);
       setIsoSurfaceVolume(null);
+      setIsoVolumeClasses(null);
       setEddyDetection(null);
       setEddyVolume(null);
       return;
@@ -2976,6 +3164,7 @@ export default function App() {
           setTransectLatActual(null);
           setClassTraces(null);
           setIsoSurfaceVolume(null);
+          setIsoVolumeClasses(null);
           setEddyDetection(null);
           setEddyVolume(null);
           setClassStatus("off");
@@ -2999,6 +3188,7 @@ export default function App() {
           setTransectLatActual(meta.lat[yIndex] ?? latTarget);
           setClassTraces(null);
           setIsoSurfaceVolume(null);
+          setIsoVolumeClasses(null);
           setEddyDetection(null);
           setEddyVolume(null);
           setClassStatus("off");
@@ -3026,6 +3216,7 @@ export default function App() {
             setTransectLatActual(null);
             setClassTraces(null);
             setIsoSurfaceVolume(null);
+            setIsoVolumeClasses(null);
             setEddyDetection(null);
             setEddyVolume(null);
             setClassStatus("off");
@@ -3059,6 +3250,7 @@ export default function App() {
             setTransectLatActual(null);
             setClassTraces(null);
             setIsoSurfaceVolume(null);
+            setIsoVolumeClasses(null);
             setEddyDetection(null);
             setEddyVolume(null);
             setClassStatus("off");
@@ -3110,6 +3302,7 @@ export default function App() {
             setTransectValues(null);
             setTransectLatActual(null);
             setIsoSurfaceVolume(null);
+            setIsoVolumeClasses(null);
             setEddyDetection(null);
             setEddyVolume(null);
             setClassStatus("ready");
@@ -3192,6 +3385,7 @@ export default function App() {
           setTransectValues(null);
           setTransectLatActual(null);
           setIsoSurfaceVolume(null);
+          setIsoVolumeClasses(null);
           setEddyDetection(null);
           setEddyVolume(null);
           setClassStatus("ready");
@@ -3211,22 +3405,56 @@ export default function App() {
           });
           if (cancelled) return;
 
-          const volume = buildIsoSurfaceSheet({
-            data: full.data,
-            nz: full.nz,
-            ny: full.ny,
-            nx: full.nx,
-            lon: meta.lon,
-            lat: meta.lat,
-            z: meta.z,
-            varId,
-            isoValue: isoSurfaceSettings.value,
-            spatialMask,
-            playing,
-          });
+          if (isoSurfaceSettings.renderMode === "volumeSplit") {
+            const classes = buildIsoThresholdClasses({
+              data: full.data,
+              nz: full.nz,
+              ny: full.ny,
+              nx: full.nx,
+              lon: meta.lon,
+              lat: meta.lat,
+              z: meta.z,
+              varId,
+              threshold: isoSurfaceSettings.value,
+              spatialMask,
+              playing,
+              density: isoSurfaceSettings.volumeDensity,
+            });
+            const interfaceSheet = buildIsoSurfaceSheet({
+              data: full.data,
+              nz: full.nz,
+              ny: full.ny,
+              nx: full.nx,
+              lon: meta.lon,
+              lat: meta.lat,
+              z: meta.z,
+              varId,
+              isoValue: isoSurfaceSettings.value,
+              spatialMask,
+              playing,
+            });
+            if (cancelled) return;
+            setIsoSurfaceVolume(interfaceSheet);
+            setIsoVolumeClasses(classes);
+          } else {
+            const volume = buildIsoSurfaceSheet({
+              data: full.data,
+              nz: full.nz,
+              ny: full.ny,
+              nx: full.nx,
+              lon: meta.lon,
+              lat: meta.lat,
+              z: meta.z,
+              varId,
+              isoValue: isoSurfaceSettings.value,
+              spatialMask,
+              playing,
+            });
 
-          if (cancelled) return;
-          setIsoSurfaceVolume(volume);
+            if (cancelled) return;
+            setIsoSurfaceVolume(volume);
+            setIsoVolumeClasses(null);
+          }
           setHorizontalValues(null);
           setTransectValues(null);
           setTransectLatActual(null);
@@ -3328,6 +3556,7 @@ export default function App() {
           setTransectLatActual(null);
           setClassTraces(null);
           setIsoSurfaceVolume(null);
+          setIsoVolumeClasses(null);
           setEddyVolume(volume);
           setEddyStatus("ready");
           setSliceStatus("ready");
@@ -3371,6 +3600,7 @@ export default function App() {
         setTransectLatActual(null);
         setClassTraces(null);
         setIsoSurfaceVolume(null);
+        setIsoVolumeClasses(null);
         setEddyDetection(null);
         setEddyVolume(null);
       }
@@ -3398,7 +3628,9 @@ export default function App() {
     eddyThreshold,
     eddyTrackHistory,
     drawnTransectPath,
+    isoSurfaceSettings.renderMode,
     isoSurfaceSettings.value,
+    isoSurfaceSettings.volumeDensity,
     timeList.length,
     varId,
     viewMode,
@@ -3842,11 +4074,97 @@ export default function App() {
     varId,
     viewMode,
   ]);
+  const isoVolumeClassLayer = useMemo(() => {
+    if (!meta || !projectOn3d || viewMode !== "isosurface" || isoRenderMode !== "volumeSplit" || !isoVolumeClasses) {
+      return undefined;
+    }
+    if (!isoVolumeClasses.traces.length) return undefined;
+    return {
+      enabled: true,
+      varLabel: isoVolumeClasses.colorbarTitle,
+      points: isoVolumeClasses.traces,
+      markerSize: isoSurfaceSettings.volumeStyle === "cloud" ? (playing ? 4.2 : 5.2) : playing ? 2.6 : 3.3,
+      opacity: Math.max(0.22, Math.min(0.95, isoSurfaceSettings.opacity)),
+      renderStyle: isoSurfaceSettings.volumeStyle === "fill" ? "voxels" : "points",
+      showLegend: true,
+      cmin: isoVolumeClasses.cmin,
+      cmax: isoVolumeClasses.cmax,
+      colorscale: isoVolumeClasses.colorscale,
+      showScale: showColorbarActive,
+      colorbarTitle: isoVolumeClasses.colorbarTitle,
+      colorbarTicks: isoVolumeClasses.colorbarTicks,
+      colorbarTickText: isoVolumeClasses.colorbarTickText,
+      colorbarLen: mainColorbarLayout.len,
+      colorbarX: mainColorbarLayout.x,
+      colorbarY: mainColorbarLayout.y,
+    };
+  }, [
+    isoRenderMode,
+    isoSurfaceSettings.opacity,
+    isoSurfaceSettings.volumeStyle,
+    isoVolumeClasses,
+    mainColorbarLayout.len,
+    mainColorbarLayout.x,
+    mainColorbarLayout.y,
+    meta,
+    playing,
+    projectOn3d,
+    showColorbarActive,
+    viewMode,
+  ]);
+  const isoVolumeBodiesLayer = useMemo(() => {
+    if (!meta || !projectOn3d || viewMode !== "isosurface" || isoRenderMode !== "volumeSplit" || !isoSurfaceVolume) {
+      return undefined;
+    }
+    if (isoSurfaceSettings.volumeStyle !== "fill") return undefined;
+    const colors = thresholdSplitColors();
+    return {
+      enabled: true,
+      lon: isoSurfaceVolume.lon,
+      lat: isoSurfaceVolume.lat,
+      interfaceDepth: isoSurfaceVolume.depth,
+      shallowColor: colors.shallow,
+      deepColor: colors.deep,
+      opacity: Math.max(0.05, Math.min(0.14, isoSurfaceSettings.opacity * 0.18)),
+    };
+  }, [isoRenderMode, isoSurfaceSettings.opacity, isoSurfaceSettings.volumeStyle, isoSurfaceVolume, meta, projectOn3d, viewMode]);
+  const pointCloudLegendLayer = viewMode === "class" ? classLayer : isoVolumeClassLayer;
+  const pointCloudLayerPlotly = viewMode === "class" ? classLayer : isoVolumeClassLayer;
+  const pointCloudLayerThree =
+    viewMode === "class"
+      ? classLayer
+      : isoRenderMode === "volumeSplit" && isoSurfaceSettings.volumeStyle === "cloud"
+        ? isoVolumeClassLayer
+        : undefined;
   const isoSurfaceLayer = useMemo(() => {
-    if (!meta || !projectOn3d || viewMode !== "isosurface" || !isoSurfaceVolume) return undefined;
+    if (!meta || !projectOn3d || viewMode !== "isosurface" || !isoSurfaceVolume) {
+      return undefined;
+    }
     if (!isoSurfaceVolume.lon.length || !isoSurfaceVolume.lat.length || !isoSurfaceVolume.depth.length) return undefined;
     const depthRange = computeMinMax(isoSurfaceVolume.depth);
     if (!depthRange) return undefined;
+    if (isoRenderMode === "volumeSplit") {
+      const interfaceTicks = makeTicks(depthRange.min, depthRange.max, 8);
+      return {
+        enabled: true,
+        lon: isoSurfaceVolume.lon,
+        lat: isoSurfaceVolume.lat,
+        depth: isoSurfaceVolume.depth,
+        value: isoSurfaceVolume.value,
+        cmin: depthRange.min,
+        cmax: depthRange.max,
+        colorscale: interfaceColorscale,
+        opacity: isoSurfaceSettings.volumeStyle === "fill" ? 0.68 : 0.58,
+        showScale: showColorbarActive,
+        colorbarTitle: "Interface depth (m)",
+        colorbarTicks: interfaceTicks,
+        colorbarTickText: interfaceTicks ? formatColorbarTickText(interfaceTicks, "Interface depth (m)") : undefined,
+        colorbarLen: secondaryColorbarLayout.len,
+        colorbarX: secondaryColorbarLayout.x,
+        colorbarY: secondaryColorbarLayout.y,
+        valueTitle: variableColorbarTitle(varId),
+      };
+    }
     const title = "Isosurface depth (m)";
     const depthTicks = makeTicks(depthRange.min, depthRange.max, 9);
     return {
@@ -3857,27 +4175,31 @@ export default function App() {
       value: isoSurfaceVolume.value,
       cmin: depthRange.min,
       cmax: depthRange.max,
-      colorscale: paletteToColorscale(bathyPalette),
+      colorscale: buildIsoDepthColorscale(),
       opacity: isoSurfaceSettings.opacity,
       showScale: showColorbarActive,
       colorbarTitle: title,
       colorbarTicks: depthTicks,
-      colorbarTickText: formatColorbarTickText(depthTicks, title),
+      colorbarTickText: depthTicks ? formatColorbarTickText(depthTicks, title) : undefined,
       colorbarLen: mainColorbarLayout.len,
       colorbarX: mainColorbarLayout.x,
       colorbarY: mainColorbarLayout.y,
       valueTitle: variableColorbarTitle(varId),
     };
   }, [
-    bathyPalette,
+    isoRenderMode,
     isoSurfaceSettings.opacity,
-    isoSurfaceSettings.value,
+    isoSurfaceSettings.volumeStyle,
     isoSurfaceVolume,
     mainColorbarLayout.len,
     mainColorbarLayout.x,
     mainColorbarLayout.y,
     meta,
     projectOn3d,
+    interfaceColorscale,
+    secondaryColorbarLayout.len,
+    secondaryColorbarLayout.x,
+    secondaryColorbarLayout.y,
     showColorbarActive,
     varId,
     viewMode,
@@ -3887,7 +4209,7 @@ export default function App() {
     showBathy &&
     !showHorizontalColorbar &&
     !(transectField?.showScale ?? false) &&
-    !(classLayer?.showScale ?? false) &&
+    !(pointCloudLegendLayer?.showScale ?? false) &&
     !(isoSurfaceLayer?.showScale ?? false);
   const showBathyColorbarThree = showColorbarActive && showBathy;
   const bathyColorbarTitle = "Topography";
@@ -3963,6 +4285,9 @@ export default function App() {
     }
     setColorSettings((prev) => ({ ...prev, [varId]: DEFAULT_COLOR_SETTINGS[varId] }));
     setFieldColormapByVar((prev) => ({ ...prev, [varId]: DEFAULT_FIELD_COLORMAP[varId] }));
+    if (viewMode === "isosurface") {
+      setInterfaceColormap(DEFAULT_INTERFACE_COLORMAP);
+    }
   }, [setDrawAutoColorRangeEnabled, varId, viewMode]);
 
   const resetCamera = useCallback(() => {
@@ -4037,6 +4362,7 @@ export default function App() {
   const autoColorScaleFromFrame = useCallback(() => {
     if (viewMode === "draw") setDrawAutoColorRangeEnabled(false);
     if (viewMode === "isosurface") {
+      if (isoRenderMode === "volumeSplit") return;
       const mm =
         isoSurfaceVolume?.value?.length
           ? computeMinMax(isoSurfaceVolume.value, { ignoreExactZero: isZeroMaskedVar(varId) })
@@ -4080,6 +4406,7 @@ export default function App() {
     }));
   }, [
     horizontalValuesMasked,
+    isoRenderMode,
     isoSurfaceVolume,
     setDrawAutoColorRangeEnabled,
     transectValuesMasked,
@@ -4089,7 +4416,17 @@ export default function App() {
 
   const effectiveRenderer3d: Renderer3D =
     viewMode === "horizontal" ? horizontalRenderer : viewMode === "isosurface" ? isosurfaceRenderer : "plotly";
-  const activeBathyOpacity = viewMode === "isosurface" ? 0.08 : drawTransectComplete ? 0.22 : 1;
+  const activeSceneThemeMode: "day" | "night" = themeMode;
+  const activeBathyOpacity =
+    viewMode === "isosurface"
+      ? isoRenderMode === "volumeSplit"
+        ? isoSurfaceSettings.volumeStyle === "fill"
+          ? 0.92
+          : 0.86
+        : 0.72
+      : drawTransectComplete
+        ? 0.22
+        : 1;
 
   return (
     <div className="app">
@@ -4111,11 +4448,13 @@ export default function App() {
           cameraResetNonce={cameraResetNonce}
           depthRatio={deferredDepthRatio}
           fitReservedLeftPx={panelReservedLeftPx}
-          themeMode={themeMode}
+          themeMode={activeSceneThemeMode}
           showBathy={showBathy}
           onStatusChange={handleStatusChange}
           horizontalField={horizontalField}
           horizontalPlanes={horizontalPlanes}
+          classLayer={pointCloudLayerThree}
+          isoVolumeBodiesLayer={isoVolumeBodiesLayer}
           isoSurfaceLayer={isoSurfaceLayer}
           windLayer={windLayer}
           guidePath={drawGuidePath}
@@ -4142,14 +4481,14 @@ export default function App() {
           cameraResetNonce={cameraResetNonce}
           depthRatio={deferredDepthRatio}
           depthWarp={{ mode: depthWarpMode, focusDepthM: depthFocusM, deepRatio }}
-          themeMode={themeMode}
+          themeMode={activeSceneThemeMode}
           showBathy={showBathy}
           onStatusChange={handleStatusChange}
           horizontalField={horizontalField}
           horizontalPlanes={horizontalPlanes}
           guidePath={drawGuidePath}
           windLayer={windLayer}
-          classLayer={classLayer}
+          classLayer={pointCloudLayerPlotly}
           isoSurfaceLayer={isoSurfaceLayer}
           eddyLayer={eddyLayer}
           transectField={transectField}
@@ -4463,8 +4802,11 @@ export default function App() {
                   {viewMode === "isosurface" ? (
                     <div ref={(node) => assignTutorialTarget("isosurface", node)}>
                       <div className="hint">
-                        Isosurface mode shows the shallowest depth where the selected variable reaches the target value.
-                        The sheet is colored by depth, and hover still reports the selected variable value.
+                        {isoRenderMode === "volumeSplit"
+                          ? isoSurfaceSettings.volumeStyle === "fill"
+                            ? "Filled volume keeps the bed-relief terrain visible, renders two translucent layer bodies, and adds a bright interface sheet between them."
+                            : "Volume split samples the full 3D field into two clouds below and above the target value. For density, this cleanly separates lighter and denser water masses."
+                          : "Surface sheet shows the shallowest depth where the selected variable reaches the target value. The sheet is colored by depth, and hover still reports the selected variable value."}
                       </div>
                       <label>
                         Viewer
@@ -4498,7 +4840,70 @@ export default function App() {
                         </div>
                       </label>
                       <label>
-                        Target isovalue ({isoValueLabel})
+                        Render
+                        <div className="tabs">
+                          <button
+                            type="button"
+                            className={`tab ${isoRenderMode === "sheet" ? "tabActive" : ""}`}
+                            onClick={() =>
+                              setIsoSurfaceSettingsByVar((prev) => ({
+                                ...prev,
+                                [varId]: { ...prev[varId], renderMode: "sheet" },
+                              }))
+                            }
+                          >
+                            Surface sheet
+                          </button>
+                          <button
+                            type="button"
+                            className={`tab ${isoRenderMode === "volumeSplit" ? "tabActive" : ""}`}
+                            onClick={() =>
+                              setIsoSurfaceSettingsByVar((prev) => ({
+                                ...prev,
+                                [varId]: { ...prev[varId], renderMode: "volumeSplit" },
+                              }))
+                            }
+                          >
+                            Volume split
+                          </button>
+                        </div>
+                      </label>
+                      {isoRenderMode === "volumeSplit" ? (
+                        <label>
+                          Volume style
+                          <div className="tabs">
+                            <button
+                              type="button"
+                              className={`tab ${isoSurfaceSettings.volumeStyle === "fill" ? "tabActive" : ""}`}
+                              onClick={() =>
+                                setIsoSurfaceSettingsByVar((prev) => ({
+                                  ...prev,
+                                  [varId]: { ...prev[varId], volumeStyle: "fill" },
+                                }))
+                              }
+                            >
+                              Filled volume
+                            </button>
+                            <button
+                              type="button"
+                              className={`tab ${isoSurfaceSettings.volumeStyle === "cloud" ? "tabActive" : ""}`}
+                              onClick={() =>
+                                setIsoSurfaceSettingsByVar((prev) => ({
+                                  ...prev,
+                                  [varId]: { ...prev[varId], volumeStyle: "cloud" },
+                                }))
+                              }
+                            >
+                              Cloud
+                            </button>
+                          </div>
+                          <div className="hint">
+                            Filled volume uses brighter terrain plus an interface sheet in Three. Plotly keeps the cloud fallback.
+                          </div>
+                        </label>
+                      ) : null}
+                      <label>
+                        {isoRenderMode === "volumeSplit" ? `Split value (${isoValueLabel})` : `Target isovalue (${isoValueLabel})`}
                         <RangeNudgeSlider
                           min={range.min}
                           max={range.max}
@@ -4528,7 +4933,9 @@ export default function App() {
                         />
                       </label>
                       <label>
-                        Surface opacity ({isoSurfaceSettings.opacity.toFixed(2)})
+                        {isoRenderMode === "volumeSplit"
+                          ? `Cloud opacity (${isoSurfaceSettings.opacity.toFixed(2)})`
+                          : `Surface opacity (${isoSurfaceSettings.opacity.toFixed(2)})`}
                         <RangeNudgeSlider
                           min={0.2}
                           max={0.95}
@@ -4543,9 +4950,31 @@ export default function App() {
                           disabled={metaStatus !== "ready"}
                         />
                         <div className="hint">
-                          Temperature gives isothermal surfaces, Salinity gives isohaline surfaces, and Potential density gives isopycnals.
+                          {isoRenderMode === "volumeSplit"
+                            ? isoSurfaceSettings.volumeStyle === "fill"
+                              ? "Filled volume keeps the same threshold, shows the interface explicitly, and leaves the bed-relief map visible underneath."
+                              : "Volume split keeps the same threshold but shows the full 3D volume as two classes instead of a single sheet."
+                            : "Temperature gives isothermal surfaces, Salinity gives isohaline surfaces, and Potential density gives isopycnals."}
                         </div>
                       </label>
+                      {isoRenderMode === "volumeSplit" ? (
+                        <label>
+                          Volume density ({clampClassDensity(isoSurfaceSettings.volumeDensity).toFixed(2)}x)
+                          <RangeNudgeSlider
+                            min={CLASS_DENSITY_MIN}
+                            max={CLASS_DENSITY_MAX}
+                            step={CLASS_DENSITY_STEP}
+                            value={clampClassDensity(isoSurfaceSettings.volumeDensity)}
+                            onChange={(next) =>
+                              setIsoSurfaceSettingsByVar((prev) => ({
+                                ...prev,
+                                [varId]: { ...prev[varId], volumeDensity: clampClassDensity(next) },
+                              }))
+                            }
+                          />
+                          <div className="hint">Lower is faster/sparser; higher is denser/slower.</div>
+                        </label>
+                      ) : null}
                       <button
                         type="button"
                         className="tab"
@@ -4732,6 +5161,21 @@ export default function App() {
                       ))}
                     </select>
                   </label>
+                  {viewMode === "isosurface" && isoRenderMode === "volumeSplit" ? (
+                    <label>
+                      Interface depth colormap
+                      <select
+                        value={interfaceColormap}
+                        onChange={(e) => setInterfaceColormap(e.target.value as FieldColormapId)}
+                      >
+                        {FIELD_COLORMAP_OPTIONS.map((opt) => (
+                          <option key={opt.id} value={opt.id}>
+                            {opt.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  ) : null}
 
                   {viewMode === "draw" ? (
                     <>
@@ -5301,7 +5745,9 @@ export default function App() {
                               ? "awaiting clicks"
                               : "no line"
                           : viewMode === "isosurface"
-                            ? `iso ${isoValueLabel}`
+                            ? isoRenderMode === "volumeSplit"
+                              ? `split ${isoValueLabel}`
+                              : `iso ${isoValueLabel}`
                           : activeDepthLabel}
                       </div>
                     </div>

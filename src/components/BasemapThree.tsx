@@ -38,6 +38,34 @@ type HorizontalField = {
   maskDryByBathy?: boolean;
 };
 
+type ClassPointTrace = {
+  label: string;
+  value: number;
+  x: number[];
+  y: number[];
+  z: number[];
+};
+
+type ClassLayer = {
+  enabled: boolean;
+  varLabel?: string;
+  points: ClassPointTrace[];
+  markerSize?: number;
+  opacity?: number;
+  renderStyle?: "points" | "voxels";
+  showLegend?: boolean;
+  cmin: number;
+  cmax: number;
+  colorscale: Array<[number, string]>;
+  showScale?: boolean;
+  colorbarTitle?: string;
+  colorbarTicks?: number[];
+  colorbarTickText?: string[];
+  colorbarLen?: number;
+  colorbarX?: number;
+  colorbarY?: number;
+};
+
 type IsoSurfaceLayer = {
   enabled: boolean;
   lon: number[];
@@ -56,6 +84,16 @@ type IsoSurfaceLayer = {
   colorbarX?: number;
   colorbarY?: number;
   valueTitle?: string;
+};
+
+type IsoVolumeBodiesLayer = {
+  enabled: boolean;
+  lon: number[];
+  lat: number[];
+  interfaceDepth: number[][];
+  shallowColor: string;
+  deepColor: string;
+  opacity?: number;
 };
 
 type GuidePath = {
@@ -555,6 +593,262 @@ function buildIsoDepthMesh(opts: {
   return mesh;
 }
 
+function buildClassPointsObject(opts: {
+  layer: ClassLayer;
+  frame: MeshFrame;
+  verticalScale: number;
+}): THREE.Points | null {
+  const { layer, frame, verticalScale } = opts;
+  const lonSpan = Math.max(1e-9, frame.lonMax - frame.lonMin);
+  const latSpan = Math.max(1e-9, frame.latMax - frame.latMin);
+  const toX = (lon: number) => ((lon - frame.lonMin) / lonSpan - 0.5) * frame.width;
+  const toY = (lat: number) => ((lat - frame.latMin) / latSpan - 0.5) * frame.height;
+  const stops = toColorscaleStops(layer.colorscale);
+  const cmin = Number(layer.cmin);
+  const cmax = Number(layer.cmax);
+  const positions: number[] = [];
+  const colors: number[] = [];
+
+  for (const trace of layer.points ?? []) {
+    if (!Array.isArray(trace.x) || !Array.isArray(trace.y) || !Array.isArray(trace.z)) continue;
+    const color = colorFromScaleStops(
+      stops,
+      clamp((Number(trace.value) - cmin) / Math.max(1e-9, cmax - cmin), 0, 1)
+    );
+    const count = Math.min(trace.x.length, trace.y.length, trace.z.length);
+    for (let i = 0; i < count; i += 1) {
+      const lon = Number(trace.x[i]);
+      const lat = Number(trace.y[i]);
+      const depth = Number(trace.z[i]);
+      if (!Number.isFinite(lon) || !Number.isFinite(lat) || !Number.isFinite(depth)) continue;
+      positions.push(toX(lon), toY(lat), depth);
+      colors.push(color.r, color.g, color.b);
+    }
+  }
+
+  if (positions.length < 3) return null;
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
+  geometry.computeBoundingSphere();
+
+  const material = new THREE.PointsMaterial({
+    size: Math.max(1.5, Number(layer.markerSize ?? 2.6)),
+    vertexColors: true,
+    transparent: true,
+    opacity: clamp(Number(layer.opacity ?? 0.72), 0.1, 1),
+    depthWrite: false,
+    sizeAttenuation: true,
+  });
+  const points = new THREE.Points(geometry, material);
+  points.scale.z = verticalScale;
+  points.renderOrder = 8;
+  return points;
+}
+
+function estimateAverageSpacing(values: number[]) {
+  if (values.length < 2) return Number.NaN;
+  const unique = Array.from(new Set(values.map((v) => Number(v.toFixed(6))))).sort((a, b) => a - b);
+  if (unique.length < 2) return Number.NaN;
+  let sum = 0;
+  let count = 0;
+  for (let i = 1; i < unique.length; i += 1) {
+    const diff = unique[i] - unique[i - 1];
+    if (!Number.isFinite(diff) || diff <= 0) continue;
+    sum += diff;
+    count += 1;
+  }
+  return count > 0 ? sum / count : Number.NaN;
+}
+
+function buildClassVoxelObject(opts: {
+  layer: ClassLayer;
+  frame: MeshFrame;
+  verticalScale: number;
+}): THREE.Object3D | null {
+  const { layer, frame, verticalScale } = opts;
+  const lonValues: number[] = [];
+  const latValues: number[] = [];
+  const depthValues: number[] = [];
+  let totalCount = 0;
+
+  for (const trace of layer.points ?? []) {
+    const count = Math.min(trace.x.length, trace.y.length, trace.z.length);
+    totalCount += count;
+    for (let i = 0; i < count; i += 1) {
+      const lon = Number(trace.x[i]);
+      const lat = Number(trace.y[i]);
+      const depth = Number(trace.z[i]);
+      if (!Number.isFinite(lon) || !Number.isFinite(lat) || !Number.isFinite(depth)) continue;
+      lonValues.push(lon);
+      latValues.push(lat);
+      depthValues.push(depth);
+    }
+  }
+
+  if (!totalCount || !lonValues.length || !latValues.length || !depthValues.length) return null;
+
+  const lonSpan = Math.max(1e-9, frame.lonMax - frame.lonMin);
+  const latSpan = Math.max(1e-9, frame.latMax - frame.latMin);
+  const lonSpacing = estimateAverageSpacing(lonValues);
+  const latSpacing = estimateAverageSpacing(latValues);
+  const depthSpacing = estimateAverageSpacing(depthValues.map((v) => Math.abs(v)));
+  const sizeX = Math.max(0.8, (Number.isFinite(lonSpacing) ? (lonSpacing / lonSpan) * frame.width : frame.width / 70) * 0.9);
+  const sizeY = Math.max(0.8, (Number.isFinite(latSpacing) ? (latSpacing / latSpan) * frame.height : frame.height / 70) * 0.9);
+  const sizeZ = Math.max(18, (Number.isFinite(depthSpacing) ? depthSpacing : 140) * 0.9);
+  const toX = (lon: number) => ((lon - frame.lonMin) / lonSpan - 0.5) * frame.width;
+  const toY = (lat: number) => ((lat - frame.latMin) / latSpan - 0.5) * frame.height;
+  const stops = toColorscaleStops(layer.colorscale);
+  const cmin = Number(layer.cmin);
+  const cmax = Number(layer.cmax);
+
+  const geometry = new THREE.BoxGeometry(1, 1, 1);
+  const material = new THREE.MeshStandardMaterial({
+    transparent: true,
+    opacity: clamp(Number(layer.opacity ?? 0.36), 0.08, 0.95),
+    roughness: 0.88,
+    metalness: 0.02,
+    depthWrite: false,
+    vertexColors: true,
+  });
+  const voxels = new THREE.InstancedMesh(geometry, material, totalCount);
+  const matrix = new THREE.Matrix4();
+  const position = new THREE.Vector3();
+  const scale = new THREE.Vector3(sizeX, sizeY, sizeZ);
+  const quaternion = new THREE.Quaternion();
+  let instanceIndex = 0;
+
+  for (const trace of layer.points ?? []) {
+    if (!Array.isArray(trace.x) || !Array.isArray(trace.y) || !Array.isArray(trace.z)) continue;
+    const color = colorFromScaleStops(
+      stops,
+      clamp((Number(trace.value) - cmin) / Math.max(1e-9, cmax - cmin), 0, 1)
+    );
+    const count = Math.min(trace.x.length, trace.y.length, trace.z.length);
+    for (let i = 0; i < count; i += 1) {
+      const lon = Number(trace.x[i]);
+      const lat = Number(trace.y[i]);
+      const depth = Number(trace.z[i]);
+      if (!Number.isFinite(lon) || !Number.isFinite(lat) || !Number.isFinite(depth)) continue;
+      position.set(toX(lon), toY(lat), depth);
+      matrix.compose(position, quaternion, scale);
+      voxels.setMatrixAt(instanceIndex, matrix);
+      voxels.setColorAt(instanceIndex, color);
+      instanceIndex += 1;
+    }
+  }
+
+  if (!instanceIndex) {
+    geometry.dispose();
+    material.dispose();
+    return null;
+  }
+
+  voxels.count = instanceIndex;
+  voxels.instanceMatrix.needsUpdate = true;
+  if (voxels.instanceColor) voxels.instanceColor.needsUpdate = true;
+  voxels.scale.z = verticalScale;
+  voxels.renderOrder = 8;
+  return voxels;
+}
+
+function buildIsoVolumeBodiesObject(opts: {
+  layer: IsoVolumeBodiesLayer;
+  frame: MeshFrame;
+  verticalScale: number;
+  bathyLon: number[];
+  bathyLat: number[];
+  bathyDepth: number[][];
+}): THREE.Object3D | null {
+  const { layer, frame, verticalScale, bathyLon, bathyLat, bathyDepth } = opts;
+  const ny = layer.interfaceDepth.length;
+  const nx = Array.isArray(layer.interfaceDepth[0]) ? layer.interfaceDepth[0].length : 0;
+  if (ny < 2 || nx < 2 || layer.lon.length !== nx || layer.lat.length !== ny) return null;
+
+  const lonSpan = Math.max(1e-9, frame.lonMax - frame.lonMin);
+  const latSpan = Math.max(1e-9, frame.latMax - frame.latMin);
+  const toX = (lon: number) => ((lon - frame.lonMin) / lonSpan - 0.5) * frame.width;
+  const toY = (lat: number) => ((lat - frame.latMin) / latSpan - 0.5) * frame.height;
+  const shallowColor = parseCssColor(layer.shallowColor);
+  const deepColor = parseCssColor(layer.deepColor);
+  const opacity = clamp(Number(layer.opacity ?? 0.34), 0.08, 0.95);
+  const maxCells = (nx - 1) * (ny - 1) * 2;
+  const geometry = new THREE.BoxGeometry(1, 1, 1);
+  const material = new THREE.MeshBasicMaterial({
+    transparent: true,
+    opacity,
+    depthWrite: false,
+    vertexColors: true,
+    blending: THREE.AdditiveBlending,
+  });
+  const mesh = new THREE.InstancedMesh(geometry, material, maxCells);
+  const matrix = new THREE.Matrix4();
+  const position = new THREE.Vector3();
+  const scale = new THREE.Vector3();
+  const quaternion = new THREE.Quaternion();
+  let instanceIndex = 0;
+  const surfaceZ = 0;
+  const minThickness = 20;
+  const insetFactor = 0.92;
+
+  for (let j = 0; j < ny - 1; j += 1) {
+    const lat0 = Number(layer.lat[j]);
+    const lat1 = Number(layer.lat[j + 1]);
+    if (!Number.isFinite(lat0) || !Number.isFinite(lat1)) continue;
+    for (let i = 0; i < nx - 1; i += 1) {
+      const lon0 = Number(layer.lon[i]);
+      const lon1 = Number(layer.lon[i + 1]);
+      if (!Number.isFinite(lon0) || !Number.isFinite(lon1)) continue;
+      const d00 = Number(layer.interfaceDepth[j]?.[i]);
+      const d10 = Number(layer.interfaceDepth[j]?.[i + 1]);
+      const d01 = Number(layer.interfaceDepth[j + 1]?.[i]);
+      const d11 = Number(layer.interfaceDepth[j + 1]?.[i + 1]);
+      if (!Number.isFinite(d00) || !Number.isFinite(d10) || !Number.isFinite(d01) || !Number.isFinite(d11)) continue;
+
+      const lonCenter = (lon0 + lon1) * 0.5;
+      const latCenter = (lat0 + lat1) * 0.5;
+      const bathyI = nearestIndexSorted(bathyLon, lonCenter);
+      const bathyJ = nearestIndexSorted(bathyLat, latCenter);
+      const bottom = Number(bathyDepth[bathyJ]?.[bathyI]);
+      if (!Number.isFinite(bottom) || bottom > -5) continue;
+
+      const interfaceDepth = (d00 + d10 + d01 + d11) * 0.25;
+      if (!Number.isFinite(interfaceDepth) || interfaceDepth >= -minThickness) continue;
+
+      const width = Math.abs(toX(lon1) - toX(lon0)) * insetFactor;
+      const height = Math.abs(toY(lat1) - toY(lat0)) * insetFactor;
+      if (width <= 0 || height <= 0) continue;
+
+      const addBox = (top: number, base: number, color: THREE.Color) => {
+        const thickness = Math.abs(top - base);
+        if (!Number.isFinite(thickness) || thickness < minThickness) return;
+        position.set(toX(lonCenter), toY(latCenter), (top + base) * 0.5);
+        scale.set(width, height, thickness);
+        matrix.compose(position, quaternion, scale);
+        mesh.setMatrixAt(instanceIndex, matrix);
+        mesh.setColorAt(instanceIndex, color);
+        instanceIndex += 1;
+      };
+
+      addBox(surfaceZ, interfaceDepth, shallowColor);
+      if (bottom < interfaceDepth - minThickness) addBox(interfaceDepth, bottom, deepColor);
+    }
+  }
+
+  if (!instanceIndex) {
+    geometry.dispose();
+    material.dispose();
+    return null;
+  }
+
+  mesh.count = instanceIndex;
+  mesh.instanceMatrix.needsUpdate = true;
+  if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+  mesh.scale.z = verticalScale;
+  mesh.renderOrder = 8;
+  return mesh;
+}
+
 export default function BasemapThree(props: {
   bathySource?: "model" | "rtopo";
   bathyPalette?: RGB[];
@@ -574,6 +868,8 @@ export default function BasemapThree(props: {
   showBathy?: boolean;
   horizontalField?: HorizontalField;
   horizontalPlanes?: HorizontalField[];
+  classLayer?: ClassLayer;
+  isoVolumeBodiesLayer?: IsoVolumeBodiesLayer;
   isoSurfaceLayer?: IsoSurfaceLayer;
   windLayer?: WindLayer;
   guidePath?: GuidePath;
@@ -602,6 +898,8 @@ export default function BasemapThree(props: {
   const meshRef = useRef<THREE.Mesh | null>(null);
   const overlayRef = useRef<THREE.Mesh | null>(null);
   const overlayPlanesRef = useRef<THREE.Group | null>(null);
+  const classPointsRef = useRef<THREE.Object3D | null>(null);
+  const isoVolumeBodiesRef = useRef<THREE.Object3D | null>(null);
   const isoSurfaceRef = useRef<THREE.Mesh | null>(null);
   const guideRef = useRef<THREE.Object3D | null>(null);
   const windCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -949,16 +1247,22 @@ export default function BasemapThree(props: {
         disposeObject(meshRef.current);
         disposeObject(overlayRef.current);
         disposeObject(overlayPlanesRef.current);
+        disposeObject(classPointsRef.current);
+        disposeObject(isoVolumeBodiesRef.current);
         disposeObject(isoSurfaceRef.current);
         disposeObject(guideRef.current);
         meshRef.current?.parent?.remove(meshRef.current);
         overlayRef.current?.parent?.remove(overlayRef.current);
         overlayPlanesRef.current?.parent?.remove(overlayPlanesRef.current);
+        classPointsRef.current?.parent?.remove(classPointsRef.current);
+        isoVolumeBodiesRef.current?.parent?.remove(isoVolumeBodiesRef.current);
         isoSurfaceRef.current?.parent?.remove(isoSurfaceRef.current);
         guideRef.current?.parent?.remove(guideRef.current);
         meshRef.current = null;
         overlayRef.current = null;
         overlayPlanesRef.current = null;
+        classPointsRef.current = null;
+        isoVolumeBodiesRef.current = null;
         isoSurfaceRef.current = null;
         guideRef.current = null;
         meshAxesRef.current = null;
@@ -1015,6 +1319,7 @@ export default function BasemapThree(props: {
     if (mesh) mesh.scale.z = verticalScale;
     if (overlayRef.current) overlayRef.current.scale.z = verticalScale;
     if (overlayPlanesRef.current) overlayPlanesRef.current.scale.z = verticalScale;
+    if (isoVolumeBodiesRef.current) isoVolumeBodiesRef.current.scale.z = verticalScale;
     if (isoSurfaceRef.current) isoSurfaceRef.current.scale.z = verticalScale;
   }, [verticalScale]);
 
@@ -1169,6 +1474,12 @@ export default function BasemapThree(props: {
     overlayPlanesRef.current?.parent?.remove(overlayPlanesRef.current);
     disposeObject(overlayPlanesRef.current);
     overlayPlanesRef.current = null;
+    classPointsRef.current?.parent?.remove(classPointsRef.current);
+    disposeObject(classPointsRef.current);
+    classPointsRef.current = null;
+    isoVolumeBodiesRef.current?.parent?.remove(isoVolumeBodiesRef.current);
+    disposeObject(isoVolumeBodiesRef.current);
+    isoVolumeBodiesRef.current = null;
     isoSurfaceRef.current?.parent?.remove(isoSurfaceRef.current);
     disposeObject(isoSurfaceRef.current);
     isoSurfaceRef.current = null;
@@ -1214,6 +1525,40 @@ export default function BasemapThree(props: {
         disposeObject(group);
       }
     }
+    const classLayer = props.classLayer;
+    if (classLayer?.enabled) {
+      const classObject =
+        classLayer.renderStyle === "voxels"
+          ? buildClassVoxelObject({
+              layer: classLayer,
+              frame,
+              verticalScale,
+            })
+          : buildClassPointsObject({
+              layer: classLayer,
+              frame,
+              verticalScale,
+            });
+      if (classObject) {
+        scene.add(classObject);
+        classPointsRef.current = classObject;
+      }
+    }
+    const isoVolumeBodiesLayer = props.isoVolumeBodiesLayer;
+    if (isoVolumeBodiesLayer?.enabled) {
+      const volumeBodies = buildIsoVolumeBodiesObject({
+        layer: isoVolumeBodiesLayer,
+        frame,
+        verticalScale,
+        bathyLon: meshAxes.lon,
+        bathyLat: meshAxes.lat,
+        bathyDepth: meshDepth,
+      });
+      if (volumeBodies) {
+        scene.add(volumeBodies);
+        isoVolumeBodiesRef.current = volumeBodies;
+      }
+    }
     const isoSurface = props.isoSurfaceLayer;
     if (isoSurface?.enabled) {
       const mesh = buildIsoDepthMesh({
@@ -1226,7 +1571,15 @@ export default function BasemapThree(props: {
         isoSurfaceRef.current = mesh;
       }
     }
-  }, [meshFrameNonce, props.horizontalField, props.horizontalPlanes, props.isoSurfaceLayer, verticalScale]);
+  }, [
+    meshFrameNonce,
+    props.classLayer,
+    props.horizontalField,
+    props.horizontalPlanes,
+    props.isoSurfaceLayer,
+    props.isoVolumeBodiesLayer,
+    verticalScale,
+  ]);
 
   const colorbars = useMemo<ColorbarViewModel[]>(() => {
     const out: ColorbarViewModel[] = [];
@@ -1286,6 +1639,33 @@ export default function BasemapThree(props: {
       });
     }
 
+    const classLayer = props.classLayer;
+    if (
+      classLayer?.enabled &&
+      classLayer.showScale &&
+      Number.isFinite(classLayer.cmin) &&
+      Number.isFinite(classLayer.cmax) &&
+      classLayer.cmax > classLayer.cmin &&
+      Array.isArray(classLayer.colorscale) &&
+      classLayer.colorscale.length
+    ) {
+      const ticks = classLayer.colorbarTicks?.length
+        ? classLayer.colorbarTicks.filter((v) => Number.isFinite(v))
+        : makeAutoTicks(classLayer.cmin, classLayer.cmax, 6);
+      out.push({
+        id: "class",
+        title: classLayer.colorbarTitle ?? classLayer.varLabel ?? "Class",
+        gradient: colorscaleToCssGradient(classLayer.colorscale),
+        min: classLayer.cmin,
+        max: classLayer.cmax,
+        ticks,
+        tickText: classLayer.colorbarTickText?.length
+          ? classLayer.colorbarTickText
+          : formatColorbarTickText(ticks, classLayer.colorbarTitle ?? classLayer.varLabel ?? "Class"),
+        len: clamp(Number(classLayer.colorbarLen ?? 0.62), 0.25, 0.95),
+      });
+    }
+
     const isoSurface = props.isoSurfaceLayer;
     if (
       isoSurface?.enabled &&
@@ -1340,6 +1720,7 @@ export default function BasemapThree(props: {
     bathyPalette,
     bathyRange,
     props.bathyColorbar,
+    props.classLayer,
     props.horizontalField,
     props.horizontalPlanes,
     props.isoSurfaceLayer,
@@ -1649,7 +2030,16 @@ export default function BasemapThree(props: {
   const scalarColorbars = colorbars.filter((bar) => bar.id !== "bathy");
 
   return (
-      <div className="basemap" ref={containerRef} style={{ cursor: props.drawingMode ? "crosshair" : "grab" }}>
+      <div
+        className="basemap"
+        ref={containerRef}
+        style={{
+          cursor: props.drawingMode ? "crosshair" : "grab",
+          background: isDayTheme
+            ? "radial-gradient(1100px 760px at 58% 26%, rgba(234,243,251,0.96) 0%, rgba(201,221,239,0.94) 56%, rgba(173,197,221,0.92) 100%)"
+            : "radial-gradient(1100px 760px at 58% 26%, rgba(12,28,51,0.92) 0%, rgba(7,10,18,0.94) 58%, rgba(5,6,11,0.98) 100%)",
+        }}
+      >
       {runtimeStatus === "loading" || bathyStatus === "loading" ? (
         <div
           style={{
@@ -1704,7 +2094,7 @@ export default function BasemapThree(props: {
             style={{
               fontSize: 12,
               fontWeight: 600,
-              color: "rgba(255,255,255,0.92)",
+              color: "#ffffff",
               textShadow: "0 1px 2px rgba(0,0,0,0.75)",
               marginBottom: 6,
               textAlign: "right",
@@ -1734,10 +2124,10 @@ export default function BasemapThree(props: {
                     left: `calc(${(t * 100).toFixed(2)}% - 16px)`,
                     top: 0,
                     width: 32,
-                    textAlign: "center",
+                  textAlign: "center",
                   fontSize: 10,
                   lineHeight: 1.1,
-                  color: "rgba(255,255,255,0.86)",
+                  color: "#ffffff",
                   textShadow: "0 1px 2px rgba(0,0,0,0.7)",
                   whiteSpace: "nowrap",
                 }}
@@ -1764,7 +2154,7 @@ export default function BasemapThree(props: {
             style={{
               fontSize: 12,
               fontWeight: 600,
-              color: "rgba(255,255,255,0.92)",
+              color: "#ffffff",
               textShadow: "0 1px 2px rgba(0,0,0,0.75)",
               marginBottom: 6,
               textAlign: "right",
@@ -1812,7 +2202,7 @@ export default function BasemapThree(props: {
                     textAlign: "center",
                     fontSize: 10,
                     lineHeight: 1.1,
-                    color: "rgba(255,255,255,0.86)",
+                    color: "#ffffff",
                     textShadow: "0 1px 2px rgba(0,0,0,0.7)",
                     whiteSpace: "nowrap",
                   }}

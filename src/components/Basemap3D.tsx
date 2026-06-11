@@ -128,6 +128,7 @@ type ClassLayer = {
   points: ClassPointTrace[];
   markerSize?: number;
   opacity?: number;
+  renderStyle?: "points" | "voxels";
   showLegend?: boolean;
   cmin: number;
   cmax: number;
@@ -210,12 +211,12 @@ function makeColorbarConfig(opts: {
     title: {
       text: opts.title,
       side: "right",
-      font: { size: 14 },
+      font: { size: 14, color: "#ffffff" },
     },
     ...(opts.tickvals ? { tickmode: "array", tickvals: opts.tickvals } : null),
     ...(ticktext?.length ? { ticktext } : null),
     ticks: "outside",
-    tickfont: { size: 12 },
+    tickfont: { size: 12, color: "#ffffff" },
     thickness: 20,
     thicknessmode: "pixels",
     outlinewidth: 1,
@@ -3147,7 +3148,15 @@ export default function Basemap3D(props: {
   }
 
   return (
-    <div className="basemap" style={{ cursor: props.drawingMode ? "crosshair" : "grab" }}>
+    <div
+      className="basemap"
+      style={{
+        cursor: props.drawingMode ? "crosshair" : "grab",
+        background: isDayTheme
+          ? "radial-gradient(1100px 760px at 58% 26%, rgba(234,243,251,0.96) 0%, rgba(201,221,239,0.94) 56%, rgba(173,197,221,0.92) 100%)"
+          : "radial-gradient(1100px 760px at 58% 26%, rgba(12,28,51,0.92) 0%, rgba(7,10,18,0.94) 58%, rgba(5,6,11,0.98) 100%)",
+      }}
+    >
       <Plot
         data={plotRenderData as PlotData[]}
         layout={plotRenderLayout as Layout}
