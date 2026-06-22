@@ -2308,27 +2308,27 @@ export default function App() {
   const horizontalModeLabel = overlayOpacity > 0.001 ? range.title : "Topography";
   const drawMapInstruction =
     drawTransectPoints.length >= 2
-      ? `Draw mode is showing your transect cross-section at ${activeTimeLabel}. Click "Clear" in the panel to remove the line, then adjust the view angle and click "Draw line" for a new transect.${activeOverlayText}`
+      ? `Draw mode is showing your transect cross-section. Click "Clear" in the panel to remove the line, then adjust the view angle and click "Draw line" for a new transect.${activeOverlayText}`
       : drawTransectArmed && drawTransectPoints.length === 1
         ? `Draw mode: move gently and slowly over the map, then click the end point.${activeOverlayText}`
         : `Draw mode: adjust the view angle first, then click "Draw line", then move gently and slowly over the map and click the start point and end point.${activeOverlayText}`;
   const currentModeDescription =
     viewMode === "horizontal"
       ? overlayOpacity > 0.001
-        ? `Horizontal mode is showing ${horizontalModeLabel} at ${activeDepthLabel} and ${activeTimeLabel}.${activeOverlayText}`
+        ? `Horizontal mode is showing ${horizontalModeLabel} at ${activeDepthLabel}.${activeOverlayText}`
         : `Horizontal mode is showing ${horizontalModeLabel}.${activeOverlayText}`
       : viewMode === "transect"
-        ? `Zonal mode is showing a west-east section at ${latTarget.toFixed(2)}°N and ${activeTimeLabel}. Slice the latitude target to move the section north or south.${activeOverlayText}`
+        ? `Zonal mode is showing a west-east section at ${latTarget.toFixed(2)}°N. Slice the latitude target to move the section north or south.${activeOverlayText}`
       : viewMode === "draw"
           ? drawMapInstruction
           : viewMode === "class"
-            ? `Class mode is showing ${range.title} point-cloud classes between ${classMin} and ${classMax} at ${activeTimeLabel}.${activeOverlayText}`
+            ? `Class mode is showing ${range.title} point-cloud classes between ${classMin} and ${classMax}.${activeOverlayText}`
             : viewMode === "isosurface"
               ? isoRenderMode === "volumeSplit"
-                ? `${isoSurfaceSettings.volumeStyle === "fill" ? "Isosurface mode is rendering a filled" : "Isosurface mode is splitting the"} ${variableDisplayLabel(varId).toLowerCase()} volume at ${isoValueLabel} into ${isoSplitLabels.below.toLowerCase()} and ${isoSplitLabels.above.toLowerCase()} classes at ${activeTimeLabel}.${activeOverlayText}`
-                : `Isosurface mode is showing the ${isoValueLabel} ${variableDisplayLabel(varId).toLowerCase()} surface at ${activeTimeLabel}.${activeOverlayText}`
-              : `Eddy mode is showing eddy detections at ${activeTimeLabel}.${activeOverlayText}`;
-  const currentModeSummary = `${currentModeDescription} Use the control panel to change modes, layers, time, and depth. Drag to rotate the view, and zoom in or out to see details.`;
+                ? `${isoSurfaceSettings.volumeStyle === "fill" ? "Isosurface mode is rendering a filled" : "Isosurface mode is splitting the"} ${variableDisplayLabel(varId).toLowerCase()} volume at ${isoValueLabel} into ${isoSplitLabels.below.toLowerCase()} and ${isoSplitLabels.above.toLowerCase()} classes.${activeOverlayText}`
+                : `Isosurface mode is showing the ${isoValueLabel} ${variableDisplayLabel(varId).toLowerCase()} surface.${activeOverlayText}`
+              : `Eddy mode is showing eddy detections.${activeOverlayText}`;
+  const currentModeSummary = `${currentModeDescription} Data date: ${activeTimeLabel}. Use the control panel to change modes, layers, time, and depth. Drag to rotate the view, and zoom in or out to see details.`;
   const timeCoverageLabel =
     timeList.length > 1 ? `${timeList[0]} to ${timeList[timeList.length - 1]}` : timeList[0] ?? "n/a";
   const depthCoverageLabel =
