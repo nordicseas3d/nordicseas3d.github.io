@@ -3310,7 +3310,7 @@ export default function Basemap3D(props: {
         style={{ width: "100%", height: "100%", cursor: props.drawingMode ? "crosshair" : "grab" }}
         useResizeHandler
       />
-      {props.viewerHint ? <div className="mapFooterHint">{props.viewerHint}</div> : null}
+      {props.viewerHint ? <div className="mapTopHint">{props.viewerHint}</div> : null}
       <canvas
         ref={windCanvasRef}
         aria-hidden="true"

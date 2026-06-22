@@ -2330,7 +2330,7 @@ export default function BasemapThree(props: {
           </div>
         </div>
       ) : null}
-      {props.viewerHint ? <div className="mapFooterHint">{props.viewerHint}</div> : null}
+      {props.viewerHint ? <div className="mapTopHint">{props.viewerHint}</div> : null}
       <canvas
         ref={windCanvasRef}
         aria-hidden="true"

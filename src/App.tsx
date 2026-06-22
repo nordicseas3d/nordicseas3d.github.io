@@ -2009,7 +2009,7 @@ export default function App() {
   });
   const [eddyTrackLength, setEddyTrackLength] = useState(EDDY_TRACK_HISTORY_DEFAULT);
   const [eddyMinCells, setEddyMinCells] = useState(EDDY_MIN_CELLS_DEFAULT);
-  const [showSeaIce, setShowSeaIce] = useState(false);
+  const [showSeaIce, setShowSeaIce] = useState(true);
   const [showGsrMask, setShowGsrMask] = useState<boolean>(() => {
     try {
       if (typeof window === "undefined") return false;
@@ -2042,13 +2042,11 @@ export default function App() {
       return false;
     }
   });
-  const [showWind, setShowWind] = useState(false);
-  const [showCurrents, setShowCurrents] = useState(false);
-  const [showEta, setShowEta] = useState(false);
+  const [showWind, setShowWind] = useState(true);
+  const [showCurrents, setShowCurrents] = useState(true);
+  const [showEta, setShowEta] = useState(true);
   const [plotlyCameraNonce, setPlotlyCameraNonce] = useState(0);
   useEffect(() => {
-    setShowWind(false);
-    setShowCurrents(false);
     setPlotlyCameraNonce((value) => value + 1);
   }, [viewMode]);
   useEffect(() => {
@@ -2290,13 +2288,19 @@ export default function App() {
   const activeTimeLabel = timeList[safeTimeIdx] ?? "n/a";
   const activeDepthLabel = zList.length ? `${Math.round(zList[safeDepthIdx])} m` : "n/a";
   const activeOverlaySummary = [
-    showWind ? "wind stress on ocean" : null,
+    showWind ? "wind stress" : null,
     showCurrents ? "ocean currents" : null,
     showSeaIce ? "sea ice" : null,
     showEta ? "sea surface height" : null,
   ].filter(Boolean) as string[];
+  const activeOverlayList =
+    activeOverlaySummary.length <= 1
+      ? (activeOverlaySummary[0] ?? "")
+      : activeOverlaySummary.length === 2
+        ? activeOverlaySummary.join(" and ")
+        : `${activeOverlaySummary.slice(0, -1).join(", ")}, and ${activeOverlaySummary[activeOverlaySummary.length - 1]}`;
   const activeOverlayText = activeOverlaySummary.length
-    ? ` ${activeOverlaySummary.join(" and ")} ${activeOverlaySummary.length === 1 ? "is" : "are"} on.`
+    ? ` Active overlays: ${activeOverlayList}.`
     : "";
   const isoValueLabel = formatIsoValue(varId, isoSurfaceSettings.value);
   const isoRenderMode = isoSurfaceSettings.renderMode;
@@ -2308,7 +2312,7 @@ export default function App() {
       : drawTransectArmed && drawTransectPoints.length === 1
         ? `Draw mode: move gently and slowly over the map, then click the end point.${activeOverlayText}`
         : `Draw mode: adjust the view angle first, then click "Draw line", then move gently and slowly over the map and click the start point and end point.${activeOverlayText}`;
-  const currentModeSummary =
+  const currentModeDescription =
     viewMode === "horizontal"
       ? overlayOpacity > 0.001
         ? `Horizontal mode is showing ${horizontalModeLabel} at ${activeDepthLabel} and ${activeTimeLabel}.${activeOverlayText}`
@@ -2324,6 +2328,7 @@ export default function App() {
                 ? `${isoSurfaceSettings.volumeStyle === "fill" ? "Isosurface mode is rendering a filled" : "Isosurface mode is splitting the"} ${variableDisplayLabel(varId).toLowerCase()} volume at ${isoValueLabel} into ${isoSplitLabels.below.toLowerCase()} and ${isoSplitLabels.above.toLowerCase()} classes at ${activeTimeLabel}.${activeOverlayText}`
                 : `Isosurface mode is showing the ${isoValueLabel} ${variableDisplayLabel(varId).toLowerCase()} surface at ${activeTimeLabel}.${activeOverlayText}`
               : `Eddy mode is showing eddy detections at ${activeTimeLabel}.${activeOverlayText}`;
+  const currentModeSummary = `${currentModeDescription} Use the control panel to change modes, layers, time, and depth. Drag to rotate the view, and zoom in or out to see details.`;
   const timeCoverageLabel =
     timeList.length > 1 ? `${timeList[0]} to ${timeList[timeList.length - 1]}` : timeList[0] ?? "n/a";
   const depthCoverageLabel =
@@ -3150,17 +3155,24 @@ export default function App() {
     if (!availableVars.includes(varId)) setVarId(availableVars[0]);
   }, [availableVars, varId]);
 
+  const movieFrameReady =
+    metaStatus === "ready" &&
+    sliceStatus !== "loading" &&
+    (!showSeaIce || seaIceStatus !== "loading") &&
+    (!showWind || windStatus !== "loading") &&
+    (!showCurrents || currentsStatus !== "loading") &&
+    (!showEta || etaStatus !== "loading");
+
   useEffect(() => {
-    if (!playing) return;
-    if (metaStatus !== "ready" || !timeList.length) return;
-    const intervalMs = Math.max(250, Math.round(1000 / Math.max(0.5, fps)));
-    const t = window.setInterval(() => {
-      // Avoid stepping time while the current frame is still loading.
-      if (sliceStatus === "loading") return;
+    if (!playing || !timeList.length || !movieFrameReady) return;
+    const frameDelayMs = Math.max(250, Math.round(1000 / Math.max(0.5, fps)));
+    // A one-shot timer is intentionally used here. The next timer is not
+    // scheduled until every enabled layer has finished the current frame.
+    const timer = window.setTimeout(() => {
       setTimeIdx((i) => (i + 1) % timeList.length);
-    }, intervalMs);
-    return () => window.clearInterval(t);
-  }, [fps, metaStatus, playing, sliceStatus, timeList.length]);
+    }, frameDelayMs);
+    return () => window.clearTimeout(timer);
+  }, [fps, movieFrameReady, playing, safeTimeIdx, timeList.length]);
 
   useEffect(() => {
     if (!meta || metaStatus !== "ready") return;
@@ -3830,11 +3842,29 @@ export default function App() {
   useEffect(() => {
     if (!meta || metaStatus !== "ready" || !projectOn3d || !playing) return;
     if (!timeList.length) return;
-    const ahead = 10;
+    const ahead = 6;
+    const overlayAhead = 4;
+    const currentAhead = currentsDepthMode === "selected" ? overlayAhead : 2;
     const yIndex = viewMode === "transect" ? nearestIndex(meta.lat, latTarget) : -1;
     const hasDrawTransect = viewMode === "draw" && drawnTransectPath != null;
     const seaIcePrefetch = new Set<number>();
     const windPrefetch = new Set<number>();
+    const etaPrefetch = new Set<number>();
+    const velocityPrefetch: Array<{ tIndex: number; zIndex: number }> = [];
+    const nz = meta.z.length;
+    const currentLevelCount = Math.max(1, Math.min(nz, currentsLevels));
+    const currentDepthIndices =
+      currentsDepthMode === "selected"
+        ? [Math.max(0, Math.min(nz - 1, safeDepthIdx))]
+        : Array.from(
+            new Set(
+              Array.from({ length: currentLevelCount }, (_, k) =>
+                currentLevelCount <= 1
+                  ? 0
+                  : Math.round((k * (nz - 1)) / (currentLevelCount - 1))
+              )
+            )
+          );
     for (let step = 1; step <= ahead; step++) {
       const tIndex = (safeTimeIdx + step) % timeList.length;
       if (viewMode === "horizontal" || viewMode === "eddies" || viewMode === "draw") {
@@ -3876,11 +3906,17 @@ export default function App() {
           }).catch(() => undefined);
         }
       }
-      if (showSeaIce) {
+      if (showSeaIce && step <= overlayAhead) {
         seaIcePrefetch.add(tIndex);
       }
-      if (showWind) {
+      if (showWind && step <= overlayAhead) {
         windPrefetch.add(tIndex);
+      }
+      if (showEta && step <= overlayAhead) {
+        etaPrefetch.add(tIndex);
+      }
+      if (showCurrents && step <= currentAhead) {
+        currentDepthIndices.forEach((zIndex) => velocityPrefetch.push({ tIndex, zIndex }));
       }
     }
     seaIcePrefetch.forEach((tIndex) => {
@@ -3889,7 +3925,15 @@ export default function App() {
     windPrefetch.forEach((tIndex) => {
       void loadWindStress2D({ storeUrl: meta.storeUrl, tIndex }).catch(() => undefined);
     });
+    etaPrefetch.forEach((tIndex) => {
+      void loadEta2D({ storeUrl: meta.storeUrl, tIndex }).catch(() => undefined);
+    });
+    velocityPrefetch.forEach(({ tIndex, zIndex }) => {
+      void loadVelocity2D({ storeUrl: meta.storeUrl, tIndex, zIndex }).catch(() => undefined);
+    });
   }, [
+    currentsDepthMode,
+    currentsLevels,
     latTarget,
     meta,
     metaStatus,
@@ -3899,6 +3943,8 @@ export default function App() {
     safeDepthIdx,
     safeTimeIdx,
     showSeaIce,
+    showCurrents,
+    showEta,
     showWind,
     timeList.length,
     varId,
@@ -4160,7 +4206,7 @@ export default function App() {
       lat: etaRender.lat,
       cmin,
       cmax,
-      colorscale: paletteToColorscale(rdylbu_r_256()),
+      colorscale: paletteToColorscale(cmocean_256("balance")),
       opacity: SEA_ICE_OPACITY,
       mode: "surface" as const,
       zPlane: SEA_ICE_HEIGHT_M + 6,
@@ -5843,8 +5889,9 @@ export default function App() {
                     </label>
 
                     <label>
-                      FPS
+                      Frames per second
                       <select value={String(fps)} onChange={(e) => setFps(Number(e.target.value))}>
+                        <option value="0.5">0.5</option>
                         <option value="1">1</option>
                         <option value="2">2</option>
                         <option value="3">3</option>
