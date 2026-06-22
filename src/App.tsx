@@ -2135,7 +2135,7 @@ export default function App() {
   const [currentsMin, setCurrentsMin] = useState(0);
   const [currentsMax, setCurrentsMax] = useState(0);
   const [currentsGridSpacing, setCurrentsGridSpacing] = useState(12);
-  const [currentsVectorSize, setCurrentsVectorSize] = useState(2);
+  const [currentsVectorSize, setCurrentsVectorSize] = useState(1);
   const [currentsFlowSpeed, setCurrentsFlowSpeed] = useState(2.6);
   const [currentsDepthMode, setCurrentsDepthMode] = useState<"selected" | "column">("selected");
 
