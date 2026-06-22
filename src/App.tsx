@@ -25,7 +25,7 @@ import {
   type CmoceanColormapId,
   type RGB,
 } from "./lib/colormap";
-import { formatColorbarTickText } from "./lib/colorbar";
+import { formatColorbarTickText, makeStackedColorbarLayouts } from "./lib/colorbar";
 import {
   loadGsZarrMeta,
   load3DFieldAtTime,
@@ -2135,7 +2135,7 @@ export default function App() {
   const [currentsMin, setCurrentsMin] = useState(0);
   const [currentsMax, setCurrentsMax] = useState(0);
   const [currentsGridSpacing, setCurrentsGridSpacing] = useState(12);
-  const [currentsVectorSize, setCurrentsVectorSize] = useState(1);
+  const [currentsVectorSize, setCurrentsVectorSize] = useState(2);
   const [currentsFlowSpeed, setCurrentsFlowSpeed] = useState(2.6);
   const [currentsDepthMode, setCurrentsDepthMode] = useState<"selected" | "column">("selected");
 
@@ -2231,43 +2231,50 @@ export default function App() {
     lastThreeViewportKeyRef.current = nextKey;
   }, [panelOpen, viewMode, viewportHeight, viewportWidth]);
   const showColorbarActive = !(isMobilePortraitViewport && !panelOpen);
-  const hasSeaIceColorbar = projectOn3d && showSeaIce && showColorbarActive;
-  const scalarColorbarLen = hasSeaIceColorbar
-    ? isMobileViewport
-      ? 0.24
-      : 0.24
-    : isMobileViewport
-      ? 0.66
-      : 0.84;
-  const mainColorbarLayout = useMemo(
-    () =>
-      hasSeaIceColorbar
-        ? isMobileViewport
-          ? { x: 0.985, y: 0.72, len: scalarColorbarLen }
-          : { x: 1.03, y: 0.76, len: scalarColorbarLen }
-        : isMobileViewport
-          ? { x: 0.985, y: 0.50, len: 0.66 }
-          : { x: 1.03, y: 0.50, len: 0.84 },
-    [hasSeaIceColorbar, isMobileViewport, scalarColorbarLen]
-  );
-  const seaIceColorbarLayout = useMemo(
-    () =>
-      showColorbarActive
-        ? isMobileViewport
-          ? { x: 0.985, y: 0.42, len: scalarColorbarLen }
-          : { x: 1.03, y: 0.46, len: scalarColorbarLen }
-        : isMobileViewport
-          ? { x: 0.985, y: 0.50, len: 0.66 }
-          : { x: 1.03, y: 0.50, len: 0.84 },
-    [isMobileViewport, scalarColorbarLen, showColorbarActive]
-  );
-  const secondaryColorbarLayout = useMemo(
-    () =>
-      isMobileViewport
-        ? { x: 0.90, y: 0.50, len: hasSeaIceColorbar ? scalarColorbarLen : 0.66 }
-        : { x: 1.14, y: 0.50, len: hasSeaIceColorbar ? scalarColorbarLen : 0.84 },
-    [hasSeaIceColorbar, isMobileViewport, scalarColorbarLen]
-  );
+  const colorbarLayouts = useMemo(() => {
+    const ids: Array<"primary" | "interface" | "eta" | "seaIce" | "currents"> = [];
+    const hasPrimaryColorbar =
+      showBathy ||
+      overlayOpacity > 0.001 ||
+      viewMode === "transect" ||
+      viewMode === "class" ||
+      viewMode === "isosurface";
+    if (showColorbarActive && hasPrimaryColorbar) ids.push("primary");
+    if (
+      showColorbarActive &&
+      viewMode === "isosurface" &&
+      isoSurfaceSettings.renderMode === "volumeSplit"
+    )
+      ids.push("interface");
+    if (showColorbarActive && projectOn3d && showEta) ids.push("eta");
+    if (showColorbarActive && projectOn3d && showSeaIce) ids.push("seaIce");
+    if (
+      showColorbarActive &&
+      projectOn3d &&
+      showCurrents &&
+      currentsDepthMode === "column"
+    )
+      ids.push("currents");
+
+    return makeStackedColorbarLayouts(ids, isMobileViewport);
+  }, [
+    currentsDepthMode,
+    isMobileViewport,
+    isoSurfaceSettings.renderMode,
+    overlayOpacity,
+    projectOn3d,
+    showBathy,
+    showColorbarActive,
+    showCurrents,
+    showEta,
+    showSeaIce,
+    viewMode,
+  ]);
+  const mainColorbarLayout = colorbarLayouts.slots.primary ?? colorbarLayouts.fallback;
+  const secondaryColorbarLayout = colorbarLayouts.slots.interface ?? colorbarLayouts.fallback;
+  const etaColorbarLayout = colorbarLayouts.slots.eta ?? colorbarLayouts.fallback;
+  const seaIceColorbarLayout = colorbarLayouts.slots.seaIce ?? colorbarLayouts.fallback;
+  const currentsColorbarLayout = colorbarLayouts.slots.currents ?? colorbarLayouts.fallback;
 
   const timeList = meta?.timeIso ?? [];
   const zList = meta?.z ?? [];
@@ -4026,10 +4033,11 @@ export default function App() {
     };
   }, [drawCameraFocusNonce, drawnTransectPath, viewMode]);
 
+  const scalarFieldVisible = viewMode === "class" || viewMode === "isosurface" || overlayOpacity > 0.001;
   const showHorizontalColorbar =
     showColorbarActive &&
+    scalarFieldVisible &&
     (viewMode === "horizontal" || (viewMode === "draw" && !transectRender));
-  const scalarFieldVisible = viewMode === "class" || viewMode === "isosurface" || overlayOpacity > 0.001;
 
   const horizontalField = useMemo(() => {
     if (!meta || !projectOn3d || !horizontalRender) return undefined;
@@ -4213,9 +4221,9 @@ export default function App() {
       showScale: showColorbarActive,
       colorbarTicks: etaTicks,
       colorbarTickText: formatColorbarTickText(etaTicks, "Sea surface height"),
-      colorbarLen: seaIceColorbarLayout.len,
-      colorbarX: seaIceColorbarLayout.x,
-      colorbarY: seaIceColorbarLayout.y,
+      colorbarLen: etaColorbarLayout.len,
+      colorbarX: etaColorbarLayout.x,
+      colorbarY: etaColorbarLayout.y,
       colorbarTitle: "Sea surface height (m)",
     };
   }, [
@@ -4223,9 +4231,9 @@ export default function App() {
     projectOn3d,
     showEta,
     etaRender,
-    seaIceColorbarLayout.len,
-    seaIceColorbarLayout.x,
-    seaIceColorbarLayout.y,
+    etaColorbarLayout.len,
+    etaColorbarLayout.x,
+    etaColorbarLayout.y,
     showColorbarActive,
   ]);
 
@@ -4361,9 +4369,20 @@ export default function App() {
       cmax: depthMax,
       ticks,
       tickText: ticks.map((d) => String(d)),
-      len: 0.5,
+      len: currentsColorbarLayout.len,
+      x: currentsColorbarLayout.x,
+      y: currentsColorbarLayout.y,
     };
-  }, [meta, projectOn3d, showCurrents, currentsDepthMode, columnVelocity]);
+  }, [
+    columnVelocity,
+    currentsColorbarLayout.len,
+    currentsColorbarLayout.x,
+    currentsColorbarLayout.y,
+    currentsDepthMode,
+    meta,
+    projectOn3d,
+    showCurrents,
+  ]);
 
   const classLayer = useMemo(() => {
     if (!meta || !projectOn3d || viewMode !== "class" || !classTraces?.length) return undefined;

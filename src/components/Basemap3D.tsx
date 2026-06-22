@@ -621,6 +621,8 @@ export default function Basemap3D(props: {
     ticks: number[];
     tickText: string[];
     len?: number;
+    x?: number;
+    y?: number;
   };
   classLayer?: ClassLayer;
   eddyLayer?: EddyLayer;
@@ -2479,6 +2481,8 @@ export default function Basemap3D(props: {
               tickvals: colorbar.ticks,
               ticktext: colorbar.tickText,
               len: colorbar.len,
+              x: colorbar.x,
+              y: colorbar.y,
             }),
           } as any,
           hoverinfo: "skip",
@@ -3310,7 +3314,7 @@ export default function Basemap3D(props: {
         style={{ width: "100%", height: "100%", cursor: props.drawingMode ? "crosshair" : "grab" }}
         useResizeHandler
       />
-      {props.viewerHint ? <div className="mapTopHint">{props.viewerHint}</div> : null}
+      {props.viewerHint ? <div className="mapColorbarHint">{props.viewerHint}</div> : null}
       <canvas
         ref={windCanvasRef}
         aria-hidden="true"
