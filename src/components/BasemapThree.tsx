@@ -119,6 +119,8 @@ type WindLayer = {
   speed?: number;
   color?: string;
   size?: number;
+  sampleStride?: number;
+  zoomAdaptive?: boolean;
 };
 
 type MeshFrame = {
@@ -368,7 +370,7 @@ function makeBathymetryTicks(min: number, max: number) {
 
 function disposeObject(object: THREE.Object3D | null) {
   if (!object) return;
-  object.traverse((child) => {
+  object.traverse((child: THREE.Object3D) => {
     const mesh = child as THREE.Mesh;
     const geometry = (mesh as { geometry?: THREE.BufferGeometry }).geometry;
     const material = (mesh as { material?: THREE.Material | THREE.Material[] }).material;
@@ -872,6 +874,16 @@ export default function BasemapThree(props: {
   isoVolumeBodiesLayer?: IsoVolumeBodiesLayer;
   isoSurfaceLayer?: IsoSurfaceLayer;
   windLayer?: WindLayer;
+  currentLayers?: WindLayer[];
+  currentsColorbar?: {
+    title: string;
+    colorscale: any;
+    cmin: number;
+    cmax: number;
+    ticks: number[];
+    tickText: string[];
+    len?: number;
+  };
   guidePath?: GuidePath;
   onSurfacePick?: (pick: { lon: number; lat: number }) => void;
   onSurfaceHover?: (pick: { lon: number; lat: number } | null) => void;
@@ -1693,6 +1705,20 @@ export default function BasemapThree(props: {
       });
     }
 
+    const cc = props.currentsColorbar;
+    if (cc && Array.isArray(cc.colorscale) && cc.colorscale.length && cc.cmax > cc.cmin) {
+      out.push({
+        id: "currents",
+        title: cc.title,
+        gradient: colorscaleToCssGradient(cc.colorscale),
+        min: cc.cmin,
+        max: cc.cmax,
+        ticks: cc.ticks,
+        tickText: cc.tickText,
+        len: clamp(Number(cc.len ?? 0.5), 0.25, 0.95),
+      });
+    }
+
     if (
       props.bathyColorbar?.enabled &&
       (props.showBathy ?? true) &&
@@ -1725,6 +1751,7 @@ export default function BasemapThree(props: {
     props.horizontalPlanes,
     props.isoSurfaceLayer,
     props.showBathy,
+    props.currentsColorbar,
   ]);
 
   useEffect(() => {
@@ -1780,36 +1807,17 @@ export default function BasemapThree(props: {
     };
     clearCanvas();
 
-    const layer = props.windLayer;
+    const inputLayers = [props.windLayer, ...(props.currentLayers ?? [])].filter(
+      (l): l is WindLayer => !!(l && l.enabled)
+    );
     const frame = meshFrameRef.current;
     const meshAxes = meshAxesRef.current;
     const meshDepth = meshDepthRef.current;
     const renderer = rendererRef.current;
     const camera = cameraRef.current;
-    if (!layer?.enabled || !frame || !meshAxes || !meshDepth || !renderer || !camera || !canvas) return;
-
-    const lon = layer.lon ?? [];
-    const lat = layer.lat ?? [];
-    const u = layer.u ?? [];
-    const v = layer.v ?? [];
-    const nx = lon.length;
-    const ny = lat.length;
-    if (!nx || !ny) return;
-    if (u.length !== ny || v.length !== ny) return;
-    if ((u[0]?.length ?? 0) !== nx || (v[0]?.length ?? 0) !== nx) return;
-
-    const lon0 = Number(lon[0]);
-    const lonN = Number(lon[nx - 1]);
-    const lat0 = Number(lat[0]);
-    const latN = Number(lat[ny - 1]);
-    const lonAsc = lonN >= lon0;
-    const latAsc = latN >= lat0;
-    const lonMin = Math.min(lon0, lonN);
-    const lonMax = Math.max(lon0, lonN);
-    const latMin = Math.min(lat0, latN);
-    const latMax = Math.max(lat0, latN);
-    const lonSpan = Math.max(1e-9, lonMax - lonMin);
-    const latSpan = Math.max(1e-9, latMax - latMin);
+    const controls = controlsRef.current;
+    if (!inputLayers.length || !frame || !meshAxes || !meshDepth || !renderer || !camera || !controls || !canvas)
+      return;
 
     const meshLon = meshAxes.lon;
     const meshLat = meshAxes.lat;
@@ -1826,6 +1834,8 @@ export default function BasemapThree(props: {
     const meshLatSpan = Math.max(1e-9, meshLatMax - meshLatMin);
     const oceanThreshold = -5;
 
+    // Shared land/edge test from the bathymetry mesh: particles only live over
+    // wet cells and respawn at NaN / coastlines / domain edges.
     const isOcean = (x: number, y: number) => {
       if (x < meshLonMin || x > meshLonMax || y < meshLatMin || y > meshLatMax) return false;
       const tx = (x - meshLonMin) / meshLonSpan;
@@ -1849,80 +1859,7 @@ export default function BasemapThree(props: {
       return wetCorners >= 2;
     };
 
-    const sampleWind = (x: number, y: number) => {
-      if (x < lonMin || x > lonMax || y < latMin || y > latMax) return null;
-      if (!isOcean(x, y)) return null;
-      const tx = (x - lonMin) / lonSpan;
-      const ty = (y - latMin) / latSpan;
-      const cx = tx * (nx - 1);
-      const cy = ty * (ny - 1);
-      const ux = lonAsc ? cx : nx - 1 - cx;
-      const uy = latAsc ? cy : ny - 1 - cy;
-      const i0 = Math.max(0, Math.min(nx - 1, Math.floor(ux)));
-      const j0 = Math.max(0, Math.min(ny - 1, Math.floor(uy)));
-      const i1 = Math.min(nx - 1, i0 + 1);
-      const j1 = Math.min(ny - 1, j0 + 1);
-      const fx = Math.max(0, Math.min(1, ux - i0));
-      const fy = Math.max(0, Math.min(1, uy - j0));
-      const u00 = Number(u[j0]?.[i0]);
-      const u10 = Number(u[j0]?.[i1]);
-      const u01 = Number(u[j1]?.[i0]);
-      const u11 = Number(u[j1]?.[i1]);
-      const v00 = Number(v[j0]?.[i0]);
-      const v10 = Number(v[j0]?.[i1]);
-      const v01 = Number(v[j1]?.[i0]);
-      const v11 = Number(v[j1]?.[i1]);
-      if (
-        !Number.isFinite(u00) || !Number.isFinite(u10) || !Number.isFinite(u01) || !Number.isFinite(u11) ||
-        !Number.isFinite(v00) || !Number.isFinite(v10) || !Number.isFinite(v01) || !Number.isFinite(v11)
-      ) {
-        return null;
-      }
-      const w00 = (1 - fx) * (1 - fy);
-      const w10 = fx * (1 - fy);
-      const w01 = (1 - fx) * fy;
-      const w11 = fx * fy;
-      const uu = u00 * w00 + u10 * w10 + u01 * w01 + u11 * w11;
-      const vv = v00 * w00 + v10 * w10 + v01 * w01 + v11 * w11;
-      if (!Number.isFinite(uu) || !Number.isFinite(vv)) return null;
-      return { uu, vv };
-    };
-
-    let maxMag = 0;
-    for (let j = 0; j < ny; j += 1) {
-      for (let i = 0; i < nx; i += 1) {
-        const uu = Number(u[j]?.[i]);
-        const vv = Number(v[j]?.[i]);
-        if (!Number.isFinite(uu) || !Number.isFinite(vv)) continue;
-        maxMag = Math.max(maxMag, Math.hypot(uu, vv));
-      }
-    }
-    const targetDegPerSec = 1.8 * Math.max(0.1, Number(layer.speed ?? 1));
-    const advectScale = maxMag > 1e-8 ? Math.min(120, targetDegPerSec / maxMag) : 0;
-    const nParticles = Math.max(90, Math.min(2800, Math.round(Number(layer.particleCount ?? 1000))));
-    const trailLen = Math.max(10, Math.min(44, Math.round((layer.size ?? 1.4) * 13)));
-    const strokeColor = layer.color ?? "rgba(255,255,255,0.9)";
-    const lineWidth = Math.max(0.8, Number(layer.size ?? 1.2));
-    const zWorld = Number(layer.zPlane ?? 8) * verticalScale;
-
-    const spawnParticle = (): WindParticle => {
-      for (let n = 0; n < 90; n += 1) {
-        const x = lonMin + Math.random() * lonSpan;
-        const y = latMin + Math.random() * latSpan;
-        const w = sampleWind(x, y);
-        if (!w) continue;
-        const speed = Math.hypot(w.uu, w.vv);
-        if (speed <= 1e-8) continue;
-        return { x, y, ttl: 2 + Math.random() * 5, speed, trail: [{ x, y, speed }] };
-      }
-      const x = (lonMin + lonMax) * 0.5;
-      const y = (latMin + latMax) * 0.5;
-      return { x, y, ttl: 1.5, speed: 0, trail: [{ x, y, speed: 0 }] };
-    };
-
-    windParticlesRef.current = Array.from({ length: nParticles }, () => spawnParticle());
-
-    const project = (lonVal: number, latVal: number) => {
+    const project = (lonVal: number, latVal: number, zWorld: number) => {
       const wx = ((lonVal - frame.lonMin) / Math.max(1e-9, frame.lonMax - frame.lonMin) - 0.5) * frame.width;
       const wy = ((latVal - frame.latMin) / Math.max(1e-9, frame.latMax - frame.latMin) - 0.5) * frame.height;
       const vec = new THREE.Vector3(wx, wy, zWorld);
@@ -1931,10 +1868,182 @@ export default function BasemapThree(props: {
       if (vec.z < -1.2 || vec.z > 1.2 || Math.abs(vec.x) > 1.2 || Math.abs(vec.y) > 1.2) return null;
       const w = Math.max(1, canvas.clientWidth);
       const h = Math.max(1, canvas.clientHeight);
-      return {
-        x: (vec.x * 0.5 + 0.5) * w,
-        y: (-vec.y * 0.5 + 0.5) * h,
+      return { x: (vec.x * 0.5 + 0.5) * w, y: (-vec.y * 0.5 + 0.5) * h };
+    };
+
+    type LayerState = {
+      sampler: (x: number, y: number) => { uu: number; vv: number } | null;
+      spawn: () => WindParticle;
+      advectScale: number;
+      zWorld: number;
+      strokeColor: string;
+      lineWidth: number;
+      trailLen: number;
+      particles: WindParticle[];
+      lonMin: number;
+      lonMax: number;
+      latMin: number;
+      latMax: number;
+      baseParticleCount: number;
+      zoomAdaptive: boolean;
+    };
+
+    const buildLayerState = (layer: WindLayer): LayerState | null => {
+      const lon = layer.lon ?? [];
+      const lat = layer.lat ?? [];
+      const u = layer.u ?? [];
+      const v = layer.v ?? [];
+      const nx = lon.length;
+      const ny = lat.length;
+      if (!nx || !ny) return null;
+      if (u.length !== ny || v.length !== ny) return null;
+      if ((u[0]?.length ?? 0) !== nx || (v[0]?.length ?? 0) !== nx) return null;
+
+      const lon0 = Number(lon[0]);
+      const lonN = Number(lon[nx - 1]);
+      const lat0 = Number(lat[0]);
+      const latN = Number(lat[ny - 1]);
+      const lonAsc = lonN >= lon0;
+      const latAsc = latN >= lat0;
+      const lonMin = Math.min(lon0, lonN);
+      const lonMax = Math.max(lon0, lonN);
+      const latMin = Math.min(lat0, latN);
+      const latMax = Math.max(lat0, latN);
+      const lonSpan = Math.max(1e-9, lonMax - lonMin);
+      const latSpan = Math.max(1e-9, latMax - latMin);
+
+      const sampler = (x: number, y: number) => {
+        if (x < lonMin || x > lonMax || y < latMin || y > latMax) return null;
+        if (!isOcean(x, y)) return null;
+        const tx = (x - lonMin) / lonSpan;
+        const ty = (y - latMin) / latSpan;
+        const cx = tx * (nx - 1);
+        const cy = ty * (ny - 1);
+        const ux = lonAsc ? cx : nx - 1 - cx;
+        const uy = latAsc ? cy : ny - 1 - cy;
+        const i0 = Math.max(0, Math.min(nx - 1, Math.floor(ux)));
+        const j0 = Math.max(0, Math.min(ny - 1, Math.floor(uy)));
+        const i1 = Math.min(nx - 1, i0 + 1);
+        const j1 = Math.min(ny - 1, j0 + 1);
+        const fx = Math.max(0, Math.min(1, ux - i0));
+        const fy = Math.max(0, Math.min(1, uy - j0));
+        const u00 = Number(u[j0]?.[i0]);
+        const u10 = Number(u[j0]?.[i1]);
+        const u01 = Number(u[j1]?.[i0]);
+        const u11 = Number(u[j1]?.[i1]);
+        const v00 = Number(v[j0]?.[i0]);
+        const v10 = Number(v[j0]?.[i1]);
+        const v01 = Number(v[j1]?.[i0]);
+        const v11 = Number(v[j1]?.[i1]);
+        if (
+          !Number.isFinite(u00) || !Number.isFinite(u10) || !Number.isFinite(u01) || !Number.isFinite(u11) ||
+          !Number.isFinite(v00) || !Number.isFinite(v10) || !Number.isFinite(v01) || !Number.isFinite(v11)
+        ) {
+          return null;
+        }
+        const w00 = (1 - fx) * (1 - fy);
+        const w10 = fx * (1 - fy);
+        const w01 = (1 - fx) * fy;
+        const w11 = fx * fy;
+        const uu = u00 * w00 + u10 * w10 + u01 * w01 + u11 * w11;
+        const vv = v00 * w00 + v10 * w10 + v01 * w01 + v11 * w11;
+        if (!Number.isFinite(uu) || !Number.isFinite(vv)) return null;
+        return { uu, vv };
       };
+
+      let maxMag = 0;
+      for (let j = 0; j < ny; j += 1) {
+        for (let i = 0; i < nx; i += 1) {
+          const uu = Number(u[j]?.[i]);
+          const vv = Number(v[j]?.[i]);
+          if (!Number.isFinite(uu) || !Number.isFinite(vv)) continue;
+          maxMag = Math.max(maxMag, Math.hypot(uu, vv));
+        }
+      }
+      const targetDegPerSec = 1.8 * Math.max(0.1, Number(layer.speed ?? 1));
+      const advectScale = maxMag > 1e-8 ? Math.min(120, targetDegPerSec / maxMag) : 0;
+      const nParticles = Math.max(40, Math.min(2800, Math.round(Number(layer.particleCount ?? 1000))));
+      const trailLen = Math.max(10, Math.min(44, Math.round((layer.size ?? 1.4) * 13)));
+      const strokeColor = layer.color ?? "rgba(255,255,255,0.9)";
+      const lineWidth = Math.max(0.8, Number(layer.size ?? 1.2));
+      const zWorld = Number(layer.zPlane ?? 8) * verticalScale;
+
+      const spawn = (): WindParticle => {
+        for (let n = 0; n < 90; n += 1) {
+          const x = lonMin + Math.random() * lonSpan;
+          const y = latMin + Math.random() * latSpan;
+          const w = sampler(x, y);
+          if (!w) continue;
+          const speed = Math.hypot(w.uu, w.vv);
+          if (speed <= 1e-8) continue;
+          return { x, y, ttl: 2 + Math.random() * 5, speed, trail: [{ x, y, speed }] };
+        }
+        const x = (lonMin + lonMax) * 0.5;
+        const y = (latMin + latMax) * 0.5;
+        return { x, y, ttl: 1.5, speed: 0, trail: [{ x, y, speed: 0 }] };
+      };
+
+      const particles = Array.from({ length: nParticles }, () => spawn());
+      return {
+        sampler,
+        spawn,
+        advectScale,
+        zWorld,
+        strokeColor,
+        lineWidth,
+        trailLen,
+        particles,
+        lonMin,
+        lonMax,
+        latMin,
+        latMax,
+        baseParticleCount: nParticles,
+        zoomAdaptive: Boolean(layer.zoomAdaptive),
+      };
+    };
+
+    const states = inputLayers
+      .map(buildLayerState)
+      .filter((s): s is LayerState => s != null);
+    if (!states.length) return;
+    windParticlesRef.current = states.flatMap((s) => s.particles);
+
+    const fit = domainFitRef.current;
+    const fitFov = THREE.MathUtils.degToRad(camera.fov);
+    const fitHFov = 2 * Math.atan(Math.tan(fitFov * 0.5) * Math.max(1e-4, camera.aspect || 1));
+    const referenceDistance = fit
+      ? Math.max(
+          fit.radius / Math.max(1e-4, Math.sin(fitFov * 0.5)),
+          fit.radius / Math.max(1e-4, Math.sin(fitHFov * 0.5))
+        ) * 0.8
+      : camera.position.distanceTo(controls.target);
+    let lastZoomDensitySync = 0;
+
+    const syncZoomAdaptiveParticles = (ts: number) => {
+      if (ts - lastZoomDensitySync < 250) return;
+      lastZoomDensitySync = ts;
+      const adaptiveStates = states.filter((state) => state.zoomAdaptive);
+      if (!adaptiveStates.length) return;
+      const currentDistance = camera.position.distanceTo(controls.target);
+      const zoomDensity =
+        Number.isFinite(referenceDistance) && Number.isFinite(currentDistance) && currentDistance > 1e-6
+          ? clamp(referenceDistance / currentDistance, 1, 2.5)
+          : 1;
+      const baseTotal = adaptiveStates.reduce((sum, state) => sum + state.baseParticleCount, 0);
+      const desiredTotal = Math.min(4800, Math.round(baseTotal * zoomDensity * zoomDensity));
+
+      for (const state of adaptiveStates) {
+        const target = Math.max(
+          24,
+          Math.min(2800, Math.round(desiredTotal * (state.baseParticleCount / Math.max(1, baseTotal))))
+        );
+        if (state.particles.length > target) {
+          state.particles.length = target;
+        } else {
+          while (state.particles.length < target) state.particles.push(state.spawn());
+        }
+      }
+      windParticlesRef.current = states.flatMap((state) => state.particles);
     };
 
     let lastTs = 0;
@@ -1952,29 +2061,31 @@ export default function BasemapThree(props: {
       }
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, cssW, cssH);
-      ctx.strokeStyle = strokeColor;
       ctx.lineCap = "round";
       ctx.lineJoin = "round";
-      ctx.lineWidth = lineWidth;
-
-      for (const p of windParticlesRef.current) {
-        let prev: { x: number; y: number } | null = null;
-        for (let i = 0; i < p.trail.length; i += 1) {
-          const tp = p.trail[i];
-          const sp = project(tp.x, tp.y);
-          if (!sp) {
-            prev = null;
-            continue;
+      // Draw deepest layers first so shallow flow reads on top.
+      for (const st of states) {
+        ctx.strokeStyle = st.strokeColor;
+        ctx.lineWidth = st.lineWidth;
+        for (const p of st.particles) {
+          let prev: { x: number; y: number } | null = null;
+          for (let i = 0; i < p.trail.length; i += 1) {
+            const tp = p.trail[i];
+            const sp = project(tp.x, tp.y, st.zWorld);
+            if (!sp) {
+              prev = null;
+              continue;
+            }
+            if (prev) {
+              const age = p.trail.length > 1 ? i / (p.trail.length - 1) : 1;
+              ctx.globalAlpha = 0.15 + 0.7 * age * age;
+              ctx.beginPath();
+              ctx.moveTo(prev.x, prev.y);
+              ctx.lineTo(sp.x, sp.y);
+              ctx.stroke();
+            }
+            prev = sp;
           }
-          if (prev) {
-            const age = p.trail.length > 1 ? i / (p.trail.length - 1) : 1;
-            ctx.globalAlpha = 0.15 + 0.7 * age * age;
-            ctx.beginPath();
-            ctx.moveTo(prev.x, prev.y);
-            ctx.lineTo(sp.x, sp.y);
-            ctx.stroke();
-          }
-          prev = sp;
         }
       }
       ctx.globalAlpha = 1;
@@ -1984,32 +2095,37 @@ export default function BasemapThree(props: {
       const dtRaw = lastTs ? (ts - lastTs) / 1000 : 1 / 60;
       lastTs = ts;
       const dt = Math.max(0.001, Math.min(0.04, dtRaw));
-      const particles = windParticlesRef.current;
-      for (let i = 0; i < particles.length; i += 1) {
-        const p = particles[i];
-        if (p.ttl <= 0) {
-          particles[i] = spawnParticle();
-          continue;
+      syncZoomAdaptiveParticles(ts);
+      for (const st of states) {
+        const particles = st.particles;
+        for (let i = 0; i < particles.length; i += 1) {
+          const p = particles[i];
+          if (p.ttl <= 0) {
+            particles[i] = st.spawn();
+            continue;
+          }
+          const w0 = st.sampler(p.x, p.y);
+          if (!w0) {
+            particles[i] = st.spawn();
+            continue;
+          }
+          const k = st.advectScale * dt;
+          const cosLat0 = Math.max(0.15, Math.abs(Math.cos((p.y * Math.PI) / 180)));
+          const midX = p.x + (w0.uu / cosLat0) * k * 0.5;
+          const midY = p.y + w0.vv * k * 0.5;
+          const wm = st.sampler(midX, midY) ?? w0;
+          p.speed = Math.hypot(wm.uu, wm.vv);
+          const cosLatMid = Math.max(0.15, Math.abs(Math.cos((midY * Math.PI) / 180)));
+          p.x += (wm.uu / cosLatMid) * k;
+          p.y += wm.vv * k;
+          p.ttl -= dt;
+          if (!isOcean(p.x, p.y) || p.x < st.lonMin || p.x > st.lonMax || p.y < st.latMin || p.y > st.latMax) {
+            particles[i] = st.spawn();
+            continue;
+          }
+          p.trail.push({ x: p.x, y: p.y, speed: p.speed });
+          if (p.trail.length > st.trailLen) p.trail.splice(0, p.trail.length - st.trailLen);
         }
-        const w0 = sampleWind(p.x, p.y);
-        if (!w0) {
-          particles[i] = spawnParticle();
-          continue;
-        }
-        const k = advectScale * dt;
-        const midX = p.x + w0.uu * k * 0.5;
-        const midY = p.y + w0.vv * k * 0.5;
-        const wm = sampleWind(midX, midY) ?? w0;
-        p.speed = Math.hypot(wm.uu, wm.vv);
-        p.x += wm.uu * k;
-        p.y += wm.vv * k;
-        p.ttl -= dt;
-        if (!isOcean(p.x, p.y) || p.x < lonMin || p.x > lonMax || p.y < latMin || p.y > latMax) {
-          particles[i] = spawnParticle();
-          continue;
-        }
-        p.trail.push({ x: p.x, y: p.y, speed: p.speed });
-        if (p.trail.length > trailLen) p.trail.splice(0, p.trail.length - trailLen);
       }
       draw();
       windRafRef.current = window.requestAnimationFrame(tick);
@@ -2024,7 +2140,7 @@ export default function BasemapThree(props: {
       windParticlesRef.current = [];
       clearCanvas();
     };
-  }, [meshFrameNonce, props.windLayer, verticalScale]);
+  }, [meshFrameNonce, props.windLayer, props.currentLayers, verticalScale]);
 
   const bathyColorbar = colorbars.find((bar) => bar.id === "bathy") ?? null;
   const scalarColorbars = colorbars.filter((bar) => bar.id !== "bathy");

@@ -11,6 +11,8 @@ Interactive browser viewer for Nordic Seas ocean fields. The app reads a Zarr st
 - Isosurface mode for isothermal, isohaline, and isopycnal depth sheets
 - Eddy detection / eddy volume view
 - Optional topography, wind-stress, and sea-ice layers
+- Depth-resolved ocean-current vectors in both Plotly and Three renderers
+- Optional sea-surface-height layer
 - Basin masking for the North Atlantic, Greenland Sea, Iceland Sea, and Norwegian Sea
 - First-visit guided tutorial with step-by-step highlighted controls
 - Fullscreen panel workflow and mobile-safe panel sizing
@@ -82,6 +84,12 @@ Supported 2D auxiliary fields:
 - `SIarea`
 - `uwind_stress`
 - `vwind_stress`
+- `Eta_noice`
+
+Supported velocity fields:
+
+- `U_cgrid`
+- `V_cgrid`
 
 Expected coordinates:
 
@@ -99,9 +107,12 @@ The bundled dataset currently exposes:
 - `T`: `[73, 72, 312, 320]`
 - `S`: `[73, 72, 312, 320]`
 - `rho`: `[73, 72, 312, 320]`
+- `U_cgrid`: `[73, 72, 312, 320]`
+- `V_cgrid`: `[73, 72, 312, 320]`
 - `SIarea`: `[73, 312, 320]`
 - `uwind_stress`: `[73, 312, 320]`
 - `vwind_stress`: `[73, 312, 320]`
+- `Eta_noice`: `[73, 312, 320]`
 - `lon`: `[312, 320]`
 - `lat`: `[312, 320]`
 - `Z`: `[72]`
@@ -119,7 +130,7 @@ The loader also keeps fallback bathymetry JSON names for older datasets.
 
 This project is static-site friendly. The included GitHub Actions workflow builds `dist/` and deploys it to GitHub Pages.
 
-If the Zarr store is too large to ship with the site, point the build or the URL at a remote store with `VITE_GS_ZARR_URL` or `?store=...`.
+If the Zarr store is too large to ship with the site, point the build at a remote store with `VITE_GS_ZARR_URL`. Remote-data builds automatically omit `dist/data/nordic.zarr`; `?store=...` remains useful as a runtime override but cannot reduce the build artifact by itself.
 
 ## Notes
 

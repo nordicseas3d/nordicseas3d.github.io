@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Nordic Seas Explorer">
+  <rect width="64" height="64" rx="13" fill="#070a12"/>
+  <circle cx="45" cy="19" r="7" fill="#67e8f9" opacity="0.92"/>
+  <path d="M3 39c6.5 0 6.5-6.5 13-6.5S22.5 39 29 39s6.5-6.5 13-6.5S48.5 39 55 39s6.5-6.5 13-6.5"
+        fill="none" stroke="#67e8f9" stroke-width="3.2" stroke-linecap="round"/>
+  <path d="M3 49c6.5 0 6.5-6.5 13-6.5S22.5 49 29 49s6.5-6.5 13-6.5S48.5 49 55 49s6.5-6.5 13-6.5"
+        fill="none" stroke="#a78bfa" stroke-width="3.2" stroke-linecap="round" opacity="0.85"/>
+</svg>

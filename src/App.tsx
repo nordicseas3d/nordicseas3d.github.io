@@ -32,6 +32,8 @@ import {
   loadHorizontalSlice,
   loadSeaIce2D,
   loadWindStress2D,
+  loadVelocity2D,
+  loadEta2D,
   loadTransectSlice,
   nearestIndex,
   type GsZarrMeta,
@@ -2041,9 +2043,12 @@ export default function App() {
     }
   });
   const [showWind, setShowWind] = useState(false);
+  const [showCurrents, setShowCurrents] = useState(false);
+  const [showEta, setShowEta] = useState(false);
   const [plotlyCameraNonce, setPlotlyCameraNonce] = useState(0);
   useEffect(() => {
     setShowWind(false);
+    setShowCurrents(false);
     setPlotlyCameraNonce((value) => value + 1);
   }, [viewMode]);
   useEffect(() => {
@@ -2107,6 +2112,12 @@ export default function App() {
   const [seaIceError, setSeaIceError] = useState<string | null>(null);
   const [windStatus, setWindStatus] = useState<"off" | "loading" | "ready" | "failed">("off");
   const [windError, setWindError] = useState<string | null>(null);
+  const [currentsStatus, setCurrentsStatus] = useState<"off" | "loading" | "ready" | "failed">(
+    "off"
+  );
+  const [currentsError, setCurrentsError] = useState<string | null>(null);
+  const [etaStatus, setEtaStatus] = useState<"off" | "loading" | "ready" | "failed">("off");
+  const [etaError, setEtaError] = useState<string | null>(null);
 
   const [horizontalValues, setHorizontalValues] = useState<number[][] | null>(null);
   const [transectValues, setTransectValues] = useState<number[][] | null>(null);
@@ -2118,6 +2129,17 @@ export default function App() {
   const [eddyVolume, setEddyVolume] = useState<EddyVolumeCluster[] | null>(null);
   const [seaIceValues, setSeaIceValues] = useState<number[][] | null>(null);
   const [windStress, setWindStress] = useState<{ u: number[][]; v: number[][] } | null>(null);
+  const [etaValues, setEtaValues] = useState<number[][] | null>(null);
+  const [columnVelocity, setColumnVelocity] = useState<
+    Array<{ zi: number; u: number[][]; v: number[][] }> | null
+  >(null);
+  const [currentsLevels, setCurrentsLevels] = useState(6);
+  const [currentsMin, setCurrentsMin] = useState(0);
+  const [currentsMax, setCurrentsMax] = useState(0);
+  const [currentsGridSpacing, setCurrentsGridSpacing] = useState(12);
+  const [currentsVectorSize, setCurrentsVectorSize] = useState(1);
+  const [currentsFlowSpeed, setCurrentsFlowSpeed] = useState(2.6);
+  const [currentsDepthMode, setCurrentsDepthMode] = useState<"selected" | "column">("selected");
 
   const [bathyInfo, setBathyInfo] = useState<{
     plotly: "loading" | "ready" | "failed";
@@ -2269,7 +2291,9 @@ export default function App() {
   const activeDepthLabel = zList.length ? `${Math.round(zList[safeDepthIdx])} m` : "n/a";
   const activeOverlaySummary = [
     showWind ? "wind stress on ocean" : null,
+    showCurrents ? "ocean currents" : null,
     showSeaIce ? "sea ice" : null,
+    showEta ? "sea surface height" : null,
   ].filter(Boolean) as string[];
   const activeOverlayText = activeOverlaySummary.length
     ? ` ${activeOverlaySummary.join(" and ")} ${activeOverlaySummary.length === 1 ? "is" : "are"} on.`
@@ -2313,6 +2337,8 @@ export default function App() {
     eddyStatus === "failed" && eddyError ? `Eddies: ${eddyError}` : null,
     seaIceStatus === "failed" && seaIceError ? `Sea ice: ${seaIceError}` : null,
     windStatus === "failed" && windError ? `Wind: ${windError}` : null,
+    currentsStatus === "failed" && currentsError ? `Currents: ${currentsError}` : null,
+    etaStatus === "failed" && etaError ? `Sea surface height: ${etaError}` : null,
   ].filter(Boolean) as string[];
 
   const availableVars = useMemo(() => {
@@ -3067,6 +3093,19 @@ export default function App() {
     );
   }, [meta, playing, seaIceValues, spatialMask]);
 
+  const etaRender = useMemo<HorizontalGrid | null>(() => {
+    if (!meta || !etaValues) return null;
+    const values = applySpatialMaskToHorizontal(etaValues, meta.lon, meta.lat, spatialMask);
+    if (!playing) return { values, lon: meta.lon, lat: meta.lat };
+    return downsampleHorizontalGrid(
+      values,
+      meta.lon,
+      meta.lat,
+      PLAYBACK_SEA_ICE_MAX,
+      PLAYBACK_SEA_ICE_MAX
+    );
+  }, [meta, playing, etaValues, spatialMask]);
+
   const windRender = useMemo<VectorGrid | null>(() => {
     if (!meta || !windStress) return null;
     const masked = applySpatialMaskToVectorGrid(windStress, meta.lon, meta.lat, spatialMask);
@@ -3080,6 +3119,8 @@ export default function App() {
       PLAYBACK_WIND_MAX
     );
   }, [meta, playing, spatialMask, windStress]);
+
+  // Ocean currents are rendered as multi-depth flow layers (see currentLayers below).
 
   useEffect(() => {
     let cancelled = false;
@@ -3698,6 +3739,95 @@ export default function App() {
   }, [meta, metaStatus, projectOn3d, safeTimeIdx, showWind]);
 
   useEffect(() => {
+    if (!meta || metaStatus !== "ready" || !projectOn3d || !showCurrents) {
+      setCurrentsStatus("off");
+      setCurrentsError(null);
+      setColumnVelocity(null);
+      return;
+    }
+
+    const nz = meta.z.length;
+    let uniqueIdxs: number[];
+    if (currentsDepthMode === "selected") {
+      // Currents at the currently-viewed depth only, to overlay the map slice.
+      uniqueIdxs = [Math.max(0, Math.min(nz - 1, safeDepthIdx))];
+    } else {
+      const levels = Math.max(1, Math.min(nz, currentsLevels));
+      const idxs =
+        levels <= 1
+          ? [0]
+          : Array.from({ length: levels }, (_, k) => Math.round((k * (nz - 1)) / (levels - 1)));
+      uniqueIdxs = Array.from(new Set(idxs));
+    }
+
+    let cancelled = false;
+    setCurrentsStatus("loading");
+    setCurrentsError(null);
+    Promise.all(
+      uniqueIdxs.map((zi) =>
+        loadVelocity2D({ storeUrl: meta.storeUrl, tIndex: safeTimeIdx, zIndex: zi }).then(
+          (d) => ({ zi, u: d.u, v: d.v })
+        )
+      )
+    )
+      .then((slices) => {
+        if (cancelled) return;
+        setColumnVelocity(slices);
+        setCurrentsStatus("ready");
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        console.error(e);
+        setColumnVelocity(null);
+        setCurrentsStatus("failed");
+        setCurrentsError(e instanceof Error ? e.message : String(e));
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    meta,
+    metaStatus,
+    projectOn3d,
+    safeTimeIdx,
+    safeDepthIdx,
+    showCurrents,
+    currentsLevels,
+    currentsDepthMode,
+  ]);
+
+  useEffect(() => {
+    if (!meta || metaStatus !== "ready" || !projectOn3d || !showEta) {
+      setEtaStatus("off");
+      setEtaError(null);
+      setEtaValues(null);
+      return;
+    }
+
+    let cancelled = false;
+    setEtaStatus("loading");
+    setEtaError(null);
+    loadEta2D({ storeUrl: meta.storeUrl, tIndex: safeTimeIdx })
+      .then((values) => {
+        if (cancelled) return;
+        setEtaValues(values);
+        setEtaStatus("ready");
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        console.error(e);
+        setEtaValues(null);
+        setEtaStatus("failed");
+        setEtaError(e instanceof Error ? e.message : String(e));
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [meta, metaStatus, projectOn3d, safeTimeIdx, showEta]);
+
+  useEffect(() => {
     if (!meta || metaStatus !== "ready" || !projectOn3d || !playing) return;
     if (!timeList.length) return;
     const ahead = 10;
@@ -4000,13 +4130,71 @@ export default function App() {
     showColorbarActive,
   ]);
 
+  const etaPlane = useMemo(() => {
+    if (!meta || !projectOn3d || !showEta || !etaRender) return null;
+    const masked = etaRender.values.map((row) =>
+      row.map((v) => {
+        const x = Number(v);
+        return Number.isFinite(x) ? x : Number.NaN;
+      })
+    );
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (const row of masked) {
+      for (const v of row) {
+        if (Number.isFinite(v)) {
+          if (v < lo) lo = v;
+          if (v > hi) hi = v;
+        }
+      }
+    }
+    if (!Number.isFinite(lo) || !Number.isFinite(hi)) return null;
+    const amp = Math.max(Math.abs(lo), Math.abs(hi)) || 1;
+    const cmin = -amp;
+    const cmax = amp;
+    const etaTicks = [cmin, cmin / 2, 0, cmax / 2, cmax];
+    return {
+      enabled: true,
+      values: masked,
+      lon: etaRender.lon,
+      lat: etaRender.lat,
+      cmin,
+      cmax,
+      colorscale: paletteToColorscale(rdylbu_r_256()),
+      opacity: SEA_ICE_OPACITY,
+      mode: "surface" as const,
+      zPlane: SEA_ICE_HEIGHT_M + 6,
+      showScale: showColorbarActive,
+      colorbarTicks: etaTicks,
+      colorbarTickText: formatColorbarTickText(etaTicks, "Sea surface height"),
+      colorbarLen: seaIceColorbarLayout.len,
+      colorbarX: seaIceColorbarLayout.x,
+      colorbarY: seaIceColorbarLayout.y,
+      colorbarTitle: "Sea surface height (m)",
+    };
+  }, [
+    meta,
+    projectOn3d,
+    showEta,
+    etaRender,
+    seaIceColorbarLayout.len,
+    seaIceColorbarLayout.x,
+    seaIceColorbarLayout.y,
+    showColorbarActive,
+  ]);
+
   const horizontalPlanes = useMemo(() => {
     if (!meta || !projectOn3d) return undefined;
-    return seaIcePlane ? [seaIcePlane] : undefined;
+    type Plane = NonNullable<typeof seaIcePlane>;
+    const planes: Plane[] = [];
+    if (seaIcePlane) planes.push(seaIcePlane);
+    if (etaPlane) planes.push(etaPlane as Plane);
+    return planes.length ? planes : undefined;
   }, [
     meta,
     projectOn3d,
     seaIcePlane,
+    etaPlane,
   ]);
 
   const windParticleCount = useMemo(() => {
@@ -4032,6 +4220,104 @@ export default function App() {
       size: playing ? 1.1 : 1.35,
     };
   }, [meta, projectOn3d, showWind, windParticleCount, windRender, playing]);
+
+  // Multi-depth ocean currents: one animated flow layer per sampled depth,
+  // placed at its true depth (z in metres) and colored by depth (surface->deep).
+  const currentLayers = useMemo(() => {
+    if (!meta || !projectOn3d || !showCurrents || !columnVelocity?.length) return undefined;
+    const nz = meta.z.length;
+    const palette = plasma_256();
+    const isSelected = currentsDepthMode === "selected";
+    const densityScale = (12 / Math.max(4, currentsGridSpacing)) ** 2;
+    const currentParticleBudget = clamp(
+      Math.round(windParticleCount * densityScale * (playing ? 0.72 : 1)),
+      isSelected ? 240 : 320,
+      playing ? 2600 : 4200
+    );
+    // One full-budget layer for the selected level; otherwise spread a bounded
+    // budget across depth layers so the animation stays smooth.
+    const perLayer = isSelected
+      ? currentParticleBudget
+      : Math.max(
+          28,
+          Math.min(700, Math.round(currentParticleBudget / Math.max(1, columnVelocity.length)))
+        );
+    const minSp = Math.max(0, currentsMin);
+    const maxSp = currentsMax > 0 ? currentsMax : Infinity;
+    const out = columnVelocity.map(({ zi, u, v }) => {
+      const masked = applySpatialMaskToVectorGrid({ u, v }, meta.lon, meta.lat, spatialMask);
+      // Speed-band filter: hide cells outside [min, max] so users can isolate flow.
+      const fu = masked.u.map((row, j) =>
+        row.map((val, i) => {
+          const sp = Math.hypot(Number(val), Number(masked.v[j][i]));
+          return sp < minSp || sp > maxSp ? Number.NaN : Number(val);
+        })
+      );
+      const fv = masked.v.map((row, j) =>
+        row.map((val, i) => {
+          const sp = Math.hypot(Number(masked.u[j][i]), Number(val));
+          return sp < minSp || sp > maxSp ? Number.NaN : Number(val);
+        })
+      );
+      const t = nz > 1 ? zi / (nz - 1) : 0;
+      // Surface (t=0) bright, deep (t=1) dark.
+      const c = palette[Math.max(0, Math.min(255, Math.round((1 - t) * 255)))];
+      return {
+        enabled: true,
+        lon: meta.lon,
+        lat: meta.lat,
+        u: fu,
+        v: fv,
+        // Keep selected currents on their actual map-slice depth. The small
+        // offset prevents z-fighting with the scalar plane.
+        zPlane: isSelected ? meta.z[zi] + 12 : meta.z[zi],
+        particleCount: perLayer,
+        speed: currentsFlowSpeed,
+        color: isSelected ? "rgba(103,232,249,0.95)" : `rgba(${c.r},${c.g},${c.b},0.92)`,
+        size: currentsVectorSize * (playing ? 0.88 : 1),
+        sampleStride: currentsGridSpacing,
+        zoomAdaptive: true,
+      };
+    });
+    return out;
+  }, [
+    meta,
+    projectOn3d,
+    showCurrents,
+    columnVelocity,
+    spatialMask,
+    windParticleCount,
+    currentsMin,
+    currentsMax,
+    currentsGridSpacing,
+    currentsVectorSize,
+    currentsFlowSpeed,
+    currentsDepthMode,
+    playing,
+  ]);
+
+  // Depth colorbar for full-column currents (matches the surface->deep coloring).
+  const currentsColorbar = useMemo(() => {
+    if (
+      !meta ||
+      !projectOn3d ||
+      !showCurrents ||
+      currentsDepthMode !== "column" ||
+      !columnVelocity?.length
+    )
+      return undefined;
+    const depthMax = Math.abs(meta.z[meta.z.length - 1]) || 1;
+    const ticks = [0, 0.25, 0.5, 0.75, 1].map((f) => Math.round(f * depthMax));
+    return {
+      title: "Current depth (m)",
+      colorscale: paletteToColorscale(plasma_256().slice().reverse()),
+      cmin: 0,
+      cmax: depthMax,
+      ticks,
+      tickText: ticks.map((d) => String(d)),
+      len: 0.5,
+    };
+  }, [meta, projectOn3d, showCurrents, currentsDepthMode, columnVelocity]);
 
   const classLayer = useMemo(() => {
     if (!meta || !projectOn3d || viewMode !== "class" || !classTraces?.length) return undefined;
@@ -4457,6 +4743,8 @@ export default function App() {
           isoVolumeBodiesLayer={isoVolumeBodiesLayer}
           isoSurfaceLayer={isoSurfaceLayer}
           windLayer={windLayer}
+          currentLayers={currentLayers}
+          currentsColorbar={currentsColorbar}
           guidePath={drawGuidePath}
           drawingMode={viewMode === "draw" && drawTransectArmed}
           onSurfacePick={handleDrawSurfacePick}
@@ -4488,6 +4776,8 @@ export default function App() {
           horizontalPlanes={horizontalPlanes}
           guidePath={drawGuidePath}
           windLayer={windLayer}
+          currentLayers={currentLayers}
+          currentsColorbar={currentsColorbar}
           classLayer={pointCloudLayerPlotly}
           isoSurfaceLayer={isoSurfaceLayer}
           eddyLayer={eddyLayer}
@@ -5108,10 +5398,126 @@ export default function App() {
                         <ToggleSwitch checked={showWind} onCheckedChange={setShowWind} />
                       </div>
                       <div className="toggleRow">
+                        <div>Ocean currents</div>
+                        <ToggleSwitch checked={showCurrents} onCheckedChange={setShowCurrents} />
+                      </div>
+                      <div className="toggleRow">
                         <div>Sea ice</div>
                         <ToggleSwitch checked={showSeaIce} onCheckedChange={setShowSeaIce} />
                       </div>
+                      <div className="toggleRow">
+                        <div>Sea surface height</div>
+                        <ToggleSwitch checked={showEta} onCheckedChange={setShowEta} />
+                      </div>
                     </div>
+                    {showCurrents && (
+                      <div className="section" style={{ marginTop: 10 }}>
+                        <div className="sectionSubhead">Ocean currents</div>
+                        <label>
+                          Currents depth
+                          <select
+                            className="selectCompact"
+                            value={currentsDepthMode}
+                            onChange={(e) =>
+                              setCurrentsDepthMode(e.target.value as "selected" | "column")
+                            }
+                          >
+                            <option value="selected">Selected level (on slice)</option>
+                            <option value="column">Full column (3D, by depth)</option>
+                          </select>
+                        </label>
+                        {currentsDepthMode === "column" && (
+                          <label>
+                            Depth levels
+                            <select
+                              className="selectCompact"
+                              value={String(currentsLevels)}
+                              onChange={(e) => setCurrentsLevels(Number(e.target.value))}
+                            >
+                              <option value="4">4</option>
+                              <option value="6">6</option>
+                              <option value="8">8</option>
+                              <option value="12">12</option>
+                              <option value="16">16</option>
+                              <option value="24">24</option>
+                              <option value="36">36</option>
+                            </select>
+                          </label>
+                        )}
+                        <label>
+                          Grid spacing
+                          <select
+                            className="selectCompact"
+                            value={String(currentsGridSpacing)}
+                            onChange={(e) => setCurrentsGridSpacing(Number(e.target.value))}
+                          >
+                            <option value="4">4 cells — very dense</option>
+                            <option value="6">6 cells — dense</option>
+                            <option value="8">8 cells</option>
+                            <option value="10">10 cells</option>
+                            <option value="12">12 cells — balanced</option>
+                            <option value="16">16 cells</option>
+                            <option value="20">20 cells</option>
+                            <option value="24">24 cells — sparse</option>
+                          </select>
+                        </label>
+                        <label>
+                          Vector / line size
+                          <select
+                            className="selectCompact"
+                            value={String(currentsVectorSize)}
+                            onChange={(e) => setCurrentsVectorSize(Number(e.target.value))}
+                          >
+                            <option value="0.6">0.6 — small</option>
+                            <option value="0.8">0.8</option>
+                            <option value="1">1.0 — balanced</option>
+                            <option value="1.25">1.25</option>
+                            <option value="1.5">1.5</option>
+                            <option value="2">2.0 — large</option>
+                          </select>
+                        </label>
+                        <label>
+                          Animation speed (Three)
+                          <select
+                            className="selectCompact"
+                            value={String(currentsFlowSpeed)}
+                            onChange={(e) => setCurrentsFlowSpeed(Number(e.target.value))}
+                          >
+                            <option value="0.8">0.8 — slow</option>
+                            <option value="1.5">1.5</option>
+                            <option value="2.6">2.6 — balanced</option>
+                            <option value="3.5">3.5</option>
+                            <option value="5">5.0 — fast</option>
+                          </select>
+                        </label>
+                        <label>
+                          Min speed (m/s)
+                          <input
+                            type="number"
+                            step="0.05"
+                            min="0"
+                            value={String(currentsMin)}
+                            onChange={(e) => setCurrentsMin(Math.max(0, Number(e.target.value) || 0))}
+                          />
+                        </label>
+                        <label>
+                          Max speed (m/s, 0 = no cap)
+                          <input
+                            type="number"
+                            step="0.05"
+                            min="0"
+                            value={String(currentsMax)}
+                            onChange={(e) => setCurrentsMax(Math.max(0, Number(e.target.value) || 0))}
+                          />
+                        </label>
+                        <div className="sectionSubhead">
+                          {currentsDepthMode === "selected"
+                            ? "Currents at the selected depth. Animated in Three; native 3D vectors in Plotly."
+                            : "Full water column, colored by depth. Animated in Three; native 3D vectors in Plotly."}
+                          {" "}Zooming in automatically increases current density in both renderers.
+                        </div>
+                      </div>
+                    )}
                     <label>
                       Field opacity
                       <select

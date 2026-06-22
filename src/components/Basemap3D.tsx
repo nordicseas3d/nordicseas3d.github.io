@@ -4,6 +4,7 @@ import { withBase } from "../lib/paths";
 import { makeSyntheticGreenlandSeaBathy } from "../lib/syntheticBathy";
 import { bathyCandidates, loadBathyGridFromCandidates } from "../lib/bathyJson";
 import { formatColorbarTickText } from "../lib/colorbar";
+import { buildPlotlyCurrentVectors } from "../lib/currentVectors";
 import {
   deep_256,
   paletteToColorscale,
@@ -112,6 +113,8 @@ type WindLayer = {
   speed?: number;
   color?: string;
   size?: number;
+  sampleStride?: number;
+  zoomAdaptive?: boolean;
 };
 
 type ClassPointTrace = {
@@ -362,6 +365,11 @@ const DEFAULT_SCENE_CAMERA = {
   // Meridional (northward-facing) default view: camera is south of domain.
   eye: { x: 0.1, y: -1.95, z: 0.86 },
 };
+const DEFAULT_SCENE_CAMERA_DISTANCE = Math.hypot(
+  DEFAULT_SCENE_CAMERA.eye.x,
+  DEFAULT_SCENE_CAMERA.eye.y,
+  DEFAULT_SCENE_CAMERA.eye.z
+);
 
 const DEFAULT_VERTICAL_EXAGGERATION = 0.5;
 const SCENE_CAMERA_STORAGE_KEY = "gs_scene_camera_v1";
@@ -604,6 +612,16 @@ export default function Basemap3D(props: {
   transectField?: TransectField;
   guidePath?: GuidePath;
   windLayer?: WindLayer;
+  currentLayers?: WindLayer[];
+  currentsColorbar?: {
+    title: string;
+    colorscale: Array<[number, string]>;
+    cmin: number;
+    cmax: number;
+    ticks: number[];
+    tickText: string[];
+    len?: number;
+  };
   classLayer?: ClassLayer;
   eddyLayer?: EddyLayer;
   isoSurfaceLayer?: IsoSurfaceLayer;
@@ -649,6 +667,7 @@ export default function Basemap3D(props: {
   const [plotStatus, setPlotStatus] = useState<"loading" | "ready" | "failed">(
     "loading"
   );
+  const [currentZoomDensity, setCurrentZoomDensity] = useState(1);
   const [horizontalImg, setHorizontalImg] = useState<ImageData | null>(null);
   const [transectImg, setTransectImg] = useState<ImageData | null>(null);
   const [horizontalImgStatus, setHorizontalImgStatus] = useState<
@@ -1060,7 +1079,7 @@ export default function Basemap3D(props: {
     const headRadius = Math.max(1.3, lineWidth * 0.9);
     const lineColor = layer.color ?? WIND_TRACE_COLOR_DEFAULT;
     const zVal = scaleZ(layer.zPlane ?? 6);
-    const colorForMag = () => lineColor;
+    const colorForMag = (_mag?: number) => lineColor;
     const makeParticleAt = (x: number, y: number): WindParticle | null => {
       if (!isOcean(x, y)) return null;
       const w = sample(x, y);
@@ -1955,8 +1974,8 @@ export default function Basemap3D(props: {
             })
           : null;
 
-      const valuesMasked: number[][] = plane.values.map((row, j) =>
-        row.map((v, i) => {
+      const valuesMasked: number[][] = plane.values.map((row: number[], j: number) =>
+        row.map((v: number, i: number) => {
           const val = Number(v);
           if (!Number.isFinite(val)) return Number.NaN;
           if (plane.zeroAsMissing && val === 0) return Number.NaN;
@@ -2017,7 +2036,7 @@ export default function Basemap3D(props: {
       const zSheet = valuesMasked.map((row) =>
         row.map((val) => {
           if (!Number.isFinite(val)) return Number.NaN;
-          if (!showFieldContours) return zPlanePlot;
+          if (!showFieldContours || overlayCmin == null || overlayCmax == null) return zPlanePlot;
           const t = (val - overlayCmin) / Math.max(1e-9, overlayCmax - overlayCmin);
           const bump = FIELD_CONTOUR_EPS_M * Math.max(0, Math.min(1, t));
           return zPlanePlot + bump;
@@ -2367,6 +2386,107 @@ export default function Basemap3D(props: {
       }
     }
 
+    const currentLayers = (props.currentLayers ?? []).filter((layer) => layer?.enabled);
+    if (currentLayers.length) {
+      // Plotly handles these as native 3D cones so they stay registered with
+      // the scene during camera movement. Keep a global budget: full-column
+      // mode can contain many depth layers and must not create tens of
+      // thousands of WebGL cones from the source 312 x 320 grids.
+      const requestedBudget = currentLayers.reduce(
+        (sum, layer) => sum + Math.max(24, Number(layer.particleCount ?? 900)),
+        0
+      );
+      const zoomDensity = currentLayers.some((layer) => layer.zoomAdaptive)
+        ? currentZoomDensity
+        : 1;
+      const hardBudget = props.compactLayout ? 2200 : 6000;
+      const totalBudget = Math.max(
+        currentLayers.length * 24,
+        Math.min(hardBudget, Math.round(requestedBudget * zoomDensity * zoomDensity))
+      );
+
+      currentLayers.forEach((layer, layerIndex) => {
+        const layerWeight = Math.max(24, Number(layer.particleCount ?? 900)) / requestedBudget;
+        const layerBudget = Math.max(24, Math.floor(totalBudget * layerWeight));
+        const requestedStride = Math.max(2, Number(layer.sampleStride ?? 12));
+        const effectiveStride = Math.max(2, Math.round(requestedStride / zoomDensity));
+        const physicalZ = Number.isFinite(Number(layer.zPlane)) ? Number(layer.zPlane) : 0;
+        const vectors = buildPlotlyCurrentVectors(
+          {
+            lon: layer.lon,
+            lat: layer.lat,
+            u: layer.u,
+            v: layer.v,
+            z: physicalZ,
+          },
+          layerBudget,
+          effectiveStride
+        );
+        if (!vectors.x.length) return;
+
+        const color = layer.color ?? "rgba(103,232,249,0.95)";
+        const vectorSize = Math.max(0.45, Math.min(2.5, Number(layer.size ?? 1)));
+        traces.push({
+          type: "cone",
+          name: currentLayers.length > 1 ? `Currents ${physicalZ.toFixed(0)} m` : "Ocean currents",
+          x: vectors.x,
+          y: vectors.y,
+          z: vectors.z.map((value) => scaleZ(value)),
+          u: vectors.u,
+          v: vectors.v,
+          w: vectors.w,
+          text: vectors.hoverText,
+          hovertemplate: "%{text}<extra></extra>",
+          hoverinfo: "text",
+          anchor: "tail",
+          sizemode: "absolute",
+          sizeref: (currentLayers.length > 1 ? 1.05 : 0.82) / vectorSize,
+          colorscale: [
+            [0, color],
+            [1, color],
+          ],
+          cmin: 0,
+          cmax: 1,
+          showscale: false,
+          opacity: currentLayers.length > 1 ? 0.74 : 0.9,
+          showlegend: false,
+          lighting: { ambient: 0.9, diffuse: 0.55, specular: 0.08, roughness: 0.9 },
+          lightposition: { x: 1000, y: 1000, z: 2000 },
+          legendgroup: `currents-${layerIndex}`,
+        } as any);
+      });
+
+      const colorbar = props.currentsColorbar;
+      if (colorbar) {
+        const markerZ = scaleZ(Number(currentLayers[0]?.zPlane ?? 0));
+        traces.push({
+          type: "scatter3d",
+          mode: "markers",
+          name: colorbar.title,
+          x: [bathy.lon[0], bathy.lon[0]],
+          y: [bathy.lat[0], bathy.lat[0]],
+          z: [markerZ, markerZ],
+          marker: {
+            size: 0.1,
+            opacity: 0.001,
+            color: [colorbar.cmin, colorbar.cmax],
+            cmin: colorbar.cmin,
+            cmax: colorbar.cmax,
+            colorscale: colorbar.colorscale,
+            showscale: true,
+            colorbar: makeColorbarConfig({
+              title: colorbar.title,
+              tickvals: colorbar.ticks,
+              ticktext: colorbar.tickText,
+              len: colorbar.len,
+            }),
+          } as any,
+          hoverinfo: "skip",
+          showlegend: false,
+        });
+      }
+    }
+
     const guidePath = props.guidePath?.enabled ? props.guidePath : null;
     if (guidePath?.lon.length && guidePath.lat.length === guidePath.lon.length) {
       const zGuide = scaleZ(Number.isFinite(Number(guidePath.zPlane)) ? Number(guidePath.zPlane) : 8);
@@ -2519,6 +2639,9 @@ export default function Basemap3D(props: {
     props.transectOverlay?.enabled,
     props.transectOverlay?.opacity,
     props.windLayer,
+    props.currentLayers,
+    props.currentsColorbar,
+    currentZoomDensity,
     props.classLayer,
     props.eddyLayer,
     props.isoSurfaceLayer,
@@ -2552,6 +2675,12 @@ export default function Basemap3D(props: {
     if (Number.isFinite(windPlaneZ)) {
       maxOverlayPlaneZ = Math.max(maxOverlayPlaneZ, windPlaneZ);
     }
+    for (const layer of props.currentLayers ?? []) {
+      const currentPlaneZ = Number(layer.zPlane);
+      if (Number.isFinite(currentPlaneZ)) {
+        maxOverlayPlaneZ = Math.max(maxOverlayPlaneZ, currentPlaneZ);
+      }
+    }
     const eddyLayer = props.eddyLayer;
     if (eddyLayer?.enabled && Array.isArray(eddyLayer.clusters)) {
       for (let i = 0; i < eddyLayer.clusters.length; i++) {
@@ -2568,6 +2697,7 @@ export default function Basemap3D(props: {
     props.horizontalField?.zPlane,
     props.horizontalPlanes,
     props.windLayer?.zPlane,
+    props.currentLayers,
     props.eddyLayer,
   ]);
 
@@ -2903,6 +3033,15 @@ export default function Basemap3D(props: {
     const cam = normalizeCamera(graphDiv?.layout?.scene?.camera);
     if (!cam) return;
     lastKnownCameraRef.current = cam;
+    const eye = cam.eye ?? DEFAULT_SCENE_CAMERA.eye;
+    const cameraDistance = Math.hypot(Number(eye.x), Number(eye.y), Number(eye.z));
+    if (Number.isFinite(cameraDistance) && cameraDistance > 1e-6) {
+      const rawDensity = Math.max(1, Math.min(3, DEFAULT_SCENE_CAMERA_DISTANCE / cameraDistance));
+      const quantizedDensity = Math.round(rawDensity * 4) / 4;
+      setCurrentZoomDensity((previous) =>
+        Math.abs(previous - quantizedDensity) >= 0.24 ? quantizedDensity : previous
+      );
+    }
     if (skipNextCameraPersistRef.current) {
       skipNextCameraPersistRef.current = false;
       return;

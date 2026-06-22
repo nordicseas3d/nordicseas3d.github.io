@@ -1142,3 +1142,21 @@ body[data-theme="night"] .iosSettingsPanel .infoValue{
     height: min(520px, 70vh);
   }
 }
+
+/* --- Accessibility: visible keyboard focus + reduced motion (added) --- */
+:where(a, button, summary, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}

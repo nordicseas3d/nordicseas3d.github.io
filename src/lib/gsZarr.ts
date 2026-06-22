@@ -48,7 +48,8 @@ function configuredStoreUrl() {
 }
 
 async function fetchJson<T>(url: string): Promise<T> {
-  const r = await fetch(url, { cache: "no-store" });
+  // Allow the browser/CDN to cache static store metadata and coordinate JSON.
+  const r = await fetch(url);
   if (!r.ok) {
     throw new Error(`${r.status} ${r.statusText} for ${url}`);
   }
@@ -473,5 +474,62 @@ export async function loadWindStress2D(opts: {
       u: reshape2D(uOut.data as any, uOut.shape[0], uOut.shape[1]),
       v: reshape2D(vOut.data as any, vOut.shape[0], vOut.shape[1]),
     };
+  });
+}
+
+const velocitySliceCache = new Map<string, Promise<{ u: number[][]; v: number[][] }>>();
+const etaSliceCache = new Map<string, Promise<number[][]>>();
+
+// Ocean velocity (U_cgrid, V_cgrid) is 4-D; read a horizontal slice at the
+// selected time AND depth so currents can be drawn at the viewing level.
+export async function loadVelocity2D(opts: {
+  storeUrl: string;
+  tIndex: number;
+  zIndex: number;
+  uVarId?: string;
+  vVarId?: string;
+}): Promise<{ u: number[][]; v: number[][] }> {
+  const uVar = opts.uVarId ?? "U_cgrid";
+  const vVar = opts.vVarId ?? "V_cgrid";
+  const key = `${opts.storeUrl}|${uVar}|${vVar}|${opts.tIndex}|${opts.zIndex}`;
+  return cachePromise(velocitySliceCache, key, 64, async () => {
+    const uArr = await openArray(opts.storeUrl, uVar);
+    const vArr = await openArray(opts.storeUrl, vVar);
+    const uOut = await zarr.get(uArr, [opts.tIndex, opts.zIndex, null, null] as any);
+    const vOut = await zarr.get(vArr, [opts.tIndex, opts.zIndex, null, null] as any);
+    if (uOut.shape.length !== 2) {
+      throw new Error(`Expected 2D ${uVar} slice, got shape [${uOut.shape.join(",")}]`);
+    }
+    if (vOut.shape.length !== 2) {
+      throw new Error(`Expected 2D ${vVar} slice, got shape [${vOut.shape.join(",")}]`);
+    }
+    if (uOut.shape[0] !== vOut.shape[0] || uOut.shape[1] !== vOut.shape[1]) {
+      throw new Error(
+        `Velocity shape mismatch: ${uVar}[${uOut.shape.join(",")}] vs ${vVar}[${vOut.shape.join(",")}]`
+      );
+    }
+    return {
+      u: reshape2D(uOut.data as any, uOut.shape[0], uOut.shape[1]),
+      v: reshape2D(vOut.data as any, vOut.shape[0], vOut.shape[1]),
+    };
+  });
+}
+
+// Sea-surface height (Eta_noice) is 2-D (time, lat, lon) — same shape family as
+// sea ice / wind stress.
+export async function loadEta2D(opts: {
+  storeUrl: string;
+  tIndex: number;
+  varId?: string;
+}): Promise<number[][]> {
+  const v = opts.varId ?? "Eta_noice";
+  const key = `${opts.storeUrl}|${v}|${opts.tIndex}`;
+  return cachePromise(etaSliceCache, key, 64, async () => {
+    const arr = await openArray(opts.storeUrl, v);
+    const out = await zarr.get(arr, [opts.tIndex, null, null] as any);
+    if (out.shape.length !== 2) {
+      throw new Error(`Expected 2D ${v}, got shape [${out.shape.join(",")}]`);
+    }
+    return reshape2D(out.data as any, out.shape[0], out.shape[1]);
   });
 }

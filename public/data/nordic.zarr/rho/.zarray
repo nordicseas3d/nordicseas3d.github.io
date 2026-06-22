@@ -7,11 +7,11 @@
   ],
   "chunks": [
     1,
-    24,
+    1,
     312,
     320
   ],
-  "dtype": "<f8",
+  "dtype": "<f4",
   "fill_value": "NaN",
   "order": "C",
   "filters": null,
@@ -19,8 +19,8 @@
   "compressor": {
     "id": "blosc",
     "cname": "zstd",
-    "clevel": 3,
-    "shuffle": 2,
+    "clevel": 5,
+    "shuffle": 1,
     "blocksize": 0
   },
   "zarr_format": 2

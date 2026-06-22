@@ -2,6 +2,7 @@ type BathyGrid = {
   lon: number[];
   lat: number[];
   z: number[][];
+  zRaw?: number[][]; // signed: land positive, ocean negative (when available)
 };
 
 function linspace(a: number, b: number, n: number) {
