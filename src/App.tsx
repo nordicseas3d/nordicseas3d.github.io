@@ -4758,6 +4758,10 @@ export default function App() {
       const beached = trajs.filter((t) => t.beached).length;
       setParticleTrajectories(trajs);
       setParticleHidden({});
+      setShowWind(false);
+      setShowCurrents(false);
+      setShowSeaIce(false);
+      setShowEta(false);
       setParticleStatus("done");
       setParticleScrub(1);
       setParticlePlaying(false);
@@ -6751,7 +6755,7 @@ export default function App() {
                         </div>
                         <div className="sectionSubhead">
                           Wind, current, sea-ice, and SSH overlays are hidden while placing or
-                          running particles; after tracking finishes, layer controls work again.
+                          running particles; after tracking finishes, turn layers back on manually.
                         </div>
                         <div className="sectionSubhead">
                           Trajectory colors use the colorbar shown on the map; scalar colors sample
