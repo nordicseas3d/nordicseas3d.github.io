@@ -25,7 +25,11 @@ import {
   type CmoceanColormapId,
   type RGB,
 } from "./lib/colormap";
-import { formatColorbarTickText, makeStackedColorbarLayouts } from "./lib/colorbar";
+import {
+  formatColorbarTick,
+  formatColorbarTickText,
+  makeStackedColorbarLayouts,
+} from "./lib/colorbar";
 import {
   loadGsZarrMeta,
   load3DFieldAtTime,
@@ -34,6 +38,7 @@ import {
   loadWindStress2D,
   loadVelocity2D,
   loadEta2D,
+  loadVolumeLevels,
   loadTransectSlice,
   nearestIndex,
   type GsZarrMeta,
@@ -44,11 +49,24 @@ import {
   type EddyDetectionResult,
   type EddyVolumeCluster,
 } from "./lib/eddies";
+import {
+  integrateTrajectories,
+  makeScalarSampler,
+  type Trajectory as ParticleTrajectory,
+} from "./lib/particles";
 
-type ViewMode = "horizontal" | "transect" | "draw" | "class" | "isosurface" | "eddies";
+type ViewMode =
+  | "horizontal"
+  | "transect"
+  | "draw"
+  | "class"
+  | "isosurface"
+  | "particles"
+  | "eddies";
 type Renderer3D = "plotly" | "three";
 type PanelResizeCorner = "nw" | "ne" | "sw" | "se";
 type VarId = "T" | "S" | "rho";
+type ParticleColorMode = "index" | "depth" | "age" | "speed" | VarId;
 type ColorscaleMode = "continuous" | "discrete";
 type ExtraFieldColormapId = "rdylbu_r" | "viridis" | "plasma";
 type FieldColormapId = CmoceanColormapId | ExtraFieldColormapId;
@@ -99,6 +117,14 @@ type VectorGrid = {
 type LonLatPoint = {
   lon: number;
   lat: number;
+  bottomDepth?: number;
+};
+
+type ParticleSeed = {
+  lon: number;
+  lat: number;
+  depth: number;
+  bottomDepth?: number;
 };
 
 type TransectPathSpec = {
@@ -169,11 +195,28 @@ type IsoVolumeClassRender = {
   colorbarTickText: string[];
 };
 
-type TutorialTargetId = "panel" | "variables" | "tempo" | "draw" | "class" | "isosurface" | "masks";
+type TutorialTargetId =
+  | "panel"
+  | "variables"
+  | "tempo"
+  | "draw"
+  | "class"
+  | "isosurface"
+  | "particles"
+  | "masks";
 type TutorialPlacement = "right" | "left" | "top" | "bottom";
 
 type TutorialStep = {
-  id: "overview" | "variables" | "transect" | "draw" | "class" | "isosurface" | "workflow";
+  id:
+    | "overview"
+    | "variables"
+    | "overlays"
+    | "transect"
+    | "draw"
+    | "class"
+    | "isosurface"
+    | "particles"
+    | "workflow";
   title: string;
   body: string;
   points: string[];
@@ -206,24 +249,39 @@ const VIEW_MODE_DESCRIPTIONS: Record<Exclude<ViewMode, "eddies">, string> = {
     "Horizontal: view the selected variable on a constant-depth map slice. Select depth under Tempo-spatial, define color scheme under Color scale.",
   transect:
     "Zonal: view the selected variable on a west-east section at a chosen latitude. Slice the latitude target under Tempo-spatial, define color scheme under Color scale.",
-  draw:
-    "Draw: sample the selected variable along an arbitrary line between two map points. Set depth and draw the line under View, define color scheme under Color scale.",
+  draw: "Draw: sample the selected variable along an arbitrary line between two map points. Set depth and draw the line under View, define color scheme under Color scale.",
   class:
     "Class: show 3D point clouds for value bands through the water column. Set class range and density under View, define color scheme under Color scale.",
   isosurface:
     "Isosurface: tune a target value and visualize either the corresponding isothermal, isohaline, or isopycnal sheet, or a two-class volume split around that threshold.",
+  particles:
+    "Particles: seed drifters at the selected depth and integrate 3D Lagrangian paths through U/V/W in the Three viewer. Clicked seeds are kept above local bottom; background overlays are hidden while placing/running tracks and can be adjusted after tracking finishes.",
 };
+
+const PARTICLE_BAND_MARGIN_LEVELS = 12;
+const PARTICLE_MAX_STEP_SECONDS = 86400;
+const PARTICLE_RUN_DAYS_DEFAULT = 360;
+const PARTICLE_RUN_DAYS_STEP = 5;
+const PARTICLE_BOTTOM_CLEARANCE_M = 8;
+
+function resolveParticleSeedDepth(selectedDepth: number, bottomDepth?: number) {
+  const selected = Number.isFinite(selectedDepth) ? Math.min(0, selectedDepth) : -10;
+  if (!Number.isFinite(bottomDepth)) return selected;
+  const bottom = Number(bottomDepth);
+  if (bottom >= -PARTICLE_BOTTOM_CLEARANCE_M) return null;
+  return Math.max(selected, bottom + PARTICLE_BOTTOM_CLEARANCE_M);
+}
 
 const TUTORIAL_STEPS: TutorialStep[] = [
   {
     id: "overview",
     title: "Map and Panel",
-    body: "This viewer combines a 3D Nordic Seas map with a compact control panel.",
+    body: "This viewer combines a 3D Nordic Seas map with a responsive control panel.",
     target: "panel",
     placement: "right",
     points: [
       "Drag the map to rotate, scroll to zoom, and use the reset camera button if you lose orientation.",
-      "The control panel on the left holds modes, variables, color scale, masks, and time controls.",
+      "On desktop the panel sits to the side; on phones it behaves like a bottom sheet with the same controls.",
     ],
   },
   {
@@ -235,6 +293,17 @@ const TUTORIAL_STEPS: TutorialStep[] = [
     points: [
       "Temperature, Salinity, and Potential density share one scalar layer, so turning one on switches the others off.",
       "Field opacity and Color scale let you tune how strongly the field sits on top of the terrain.",
+    ],
+  },
+  {
+    id: "overlays",
+    title: "Currents & Overlays",
+    body: "Layer ocean currents, sea ice, and sea-surface height on top of the map.",
+    target: "variables",
+    placement: "right",
+    points: [
+      "Ocean currents animate the U/V flow at the selected depth; the default line size is 1.25 and can be adjusted here.",
+      "Sea ice and sea-surface height (Eta) are surface overlays, each with its own colorbar.",
     ],
   },
   {
@@ -282,6 +351,17 @@ const TUTORIAL_STEPS: TutorialStep[] = [
     ],
   },
   {
+    id: "particles",
+    title: "Particle Tracking",
+    body: "Particles mode seeds drifters and integrates 3D Lagrangian trajectories through the U/V/W field.",
+    target: "particles",
+    placement: "right",
+    points: [
+      "Arm Click to seed, click wet map points at the selected depth, then run the default 360-day track.",
+      "Color paths by depth, age, speed, particle ID, or scalar fields. Playback shows a side info box with day, depth, temperature, and start/end labels.",
+    ],
+  },
+  {
     id: "workflow",
     title: "Playback, Masks, and Help",
     body: "The rest of the panel helps you explore the domain over time and by subregion.",
@@ -289,7 +369,7 @@ const TUTORIAL_STEPS: TutorialStep[] = [
     placement: "right",
     points: [
       "Use the Time slider and Movie toggle to step or animate through the dataset.",
-      "Use Masks to hide subdomains, and reopen this tutorial any time with the ? button in the panel header.",
+      "Use Masks to hide subdomains, and reopen this popup tutorial any time with the ? button in the panel header.",
     ],
   },
 ];
@@ -392,7 +472,8 @@ function clamp(n: number, min: number, max: number) {
 }
 
 function defaultRange(varId: VarId) {
-  if (varId === "T") return { min: -1, max: 8, ticks: [-1, 0, 1, 2, 3, 4, 5, 6, 7, 8], title: "Temperature (°C)" };
+  if (varId === "T")
+    return { min: -1, max: 8, ticks: [-1, 0, 1, 2, 3, 4, 5, 6, 7, 8], title: "Temperature (°C)" };
   if (varId === "rho") {
     return {
       min: 24,
@@ -404,7 +485,10 @@ function defaultRange(varId: VarId) {
   return {
     min: 34,
     max: 35.6,
-    ticks: [34, 34.1, 34.2, 34.3, 34.4, 34.5, 34.6, 34.7, 34.8, 34.9, 35, 35.1, 35.2, 35.3, 35.4, 35.5, 35.6],
+    ticks: [
+      34, 34.1, 34.2, 34.3, 34.4, 34.5, 34.6, 34.7, 34.8, 34.9, 35, 35.1, 35.2, 35.3, 35.4, 35.5,
+      35.6,
+    ],
     title: "Modeled Salinity",
   };
 }
@@ -479,7 +563,12 @@ function pointPassesSpatialMask(lon: number, lat: number, mask: SpatialMaskState
   return !mask.norwegianSea;
 }
 
-function applySpatialMaskToHorizontal(values: number[][], lon: number[], lat: number[], mask: SpatialMaskState) {
+function applySpatialMaskToHorizontal(
+  values: number[][],
+  lon: number[],
+  lat: number[],
+  mask: SpatialMaskState
+) {
   if (!hasAnyMaskEnabled(mask)) return values;
   const ny = values.length;
   const nx = values[0]?.length ?? 0;
@@ -533,6 +622,121 @@ function variableColorbarTitle(varId: VarId) {
   if (varId === "T") return "Modeled Temperature (°C)";
   if (varId === "S") return "Modeled Salinity";
   return "Potential density";
+}
+
+function isScalarParticleColorMode(mode: ParticleColorMode): mode is VarId {
+  return mode === "T" || mode === "S" || mode === "rho";
+}
+
+function particleColorModeLabel(mode: ParticleColorMode) {
+  if (mode === "index") return "Particle ID";
+  if (mode === "depth") return "Depth";
+  if (mode === "age") return "Age";
+  if (mode === "speed") return "Speed";
+  return variableDisplayLabel(mode);
+}
+
+function particleColorbarTitle(mode: ParticleColorMode) {
+  if (mode === "index") return "Particle ID";
+  if (mode === "depth") return "Depth below surface (m)";
+  if (mode === "age") return "Trajectory age (days)";
+  if (mode === "speed") return "Trajectory speed (cm/s)";
+  return variableColorbarTitle(mode);
+}
+
+function finiteNestedRange(values: number[][]) {
+  let min = Infinity;
+  let max = -Infinity;
+  for (const row of values) {
+    for (const value of row) {
+      if (!Number.isFinite(value)) continue;
+      if (value < min) min = value;
+      if (value > max) max = value;
+    }
+  }
+  if (!Number.isFinite(min) || !Number.isFinite(max)) return null;
+  if (min === max) {
+    const pad = Math.max(1e-6, Math.abs(min) * 0.05);
+    return { min: min - pad, max: max + pad };
+  }
+  return { min, max };
+}
+
+function particleIndexColorscale(count: number): Array<[number, string]> {
+  if (count <= 1) {
+    return [
+      [0, "hsl(0, 95%, 58%)"],
+      [1, "hsl(0, 95%, 58%)"],
+    ];
+  }
+  const n = Math.max(2, Math.min(32, Math.round(count)));
+  const out: Array<[number, string]> = [];
+  for (let i = 0; i < n; i += 1) {
+    const t = n <= 1 ? 0 : i / (n - 1);
+    out.push([t, `hsl(${(i * 67) % 360}, 95%, 58%)`]);
+  }
+  return out;
+}
+
+function trajectorySpeedValues(points: ParticleTrajectory["points"]) {
+  const values = new Array<number>(points.length);
+  values[0] = 0;
+  const dt = Math.max(1, PARTICLE_MAX_STEP_SECONDS);
+  for (let i = 1; i < points.length; i += 1) {
+    const prev = points[i - 1];
+    const next = points[i];
+    const horizontalM = haversineKm(prev, next) * 1000;
+    const verticalM = Number(next.depth) - Number(prev.depth);
+    values[i] = (Math.hypot(horizontalM, verticalM) / dt) * 100;
+  }
+  if (values.length > 1) values[0] = values[1];
+  return values;
+}
+
+function pointAtTrajectoryProgress(points: ParticleTrajectory["points"], progress: number) {
+  if (!points.length) return null;
+  if (points.length === 1) return points[0];
+  const f = clamp(progress, 0, 1) * (points.length - 1);
+  const i0 = Math.max(0, Math.min(points.length - 1, Math.floor(f)));
+  const i1 = Math.max(0, Math.min(points.length - 1, i0 + 1));
+  const t = f - i0;
+  const a = points[i0];
+  const b = points[i1];
+  return {
+    lon: a.lon * (1 - t) + b.lon * t,
+    lat: a.lat * (1 - t) + b.lat * t,
+    depth: a.depth * (1 - t) + b.depth * t,
+  };
+}
+
+function valueAtTrajectoryProgress(values: number[] | undefined, progress: number) {
+  if (!values?.length) return null;
+  if (values.length === 1) return Number.isFinite(values[0]) ? values[0] : null;
+  const f = clamp(progress, 0, 1) * (values.length - 1);
+  const i0 = Math.max(0, Math.min(values.length - 1, Math.floor(f)));
+  const i1 = Math.max(0, Math.min(values.length - 1, i0 + 1));
+  const a = Number(values[i0]);
+  const b = Number(values[i1]);
+  if (!Number.isFinite(a)) return Number.isFinite(b) ? b : null;
+  if (!Number.isFinite(b)) return a;
+  return a * (1 - (f - i0)) + b * (f - i0);
+}
+
+function addDaysToIsoDate(isoDate: string | undefined, days: number) {
+  if (!isoDate) return null;
+  const ms = Date.parse(`${isoDate}T00:00:00Z`);
+  if (!Number.isFinite(ms)) return null;
+  return new Date(ms + days * 86400_000).toISOString().slice(0, 10);
+}
+
+function formatParticleLonLat(point: { lon: number; lat: number } | null) {
+  if (!point) return "n/a";
+  return `${point.lon.toFixed(2)}°, ${point.lat.toFixed(2)}°N`;
+}
+
+function formatParticleDepthValue(depth: number | null | undefined) {
+  const n = Number(depth);
+  return Number.isFinite(n) ? `${Math.round(n)} m` : "n/a";
 }
 
 function variableColormapLabel(varId: VarId) {
@@ -669,25 +873,43 @@ const CLASS_HALF_WIDTH_OPTIONS: Record<VarId, number[]> = {
 };
 
 const DEFAULT_ISOSURFACE_SETTINGS: Record<VarId, IsoSurfaceSettings> = {
-  T: { value: 4, opacity: 0.62, renderMode: "sheet", volumeDensity: CLASS_DENSITY_DEFAULT, volumeStyle: "fill" },
-  S: { value: 35, opacity: 0.62, renderMode: "sheet", volumeDensity: CLASS_DENSITY_DEFAULT, volumeStyle: "fill" },
-  rho: { value: 27.8, opacity: 0.62, renderMode: "sheet", volumeDensity: CLASS_DENSITY_DEFAULT, volumeStyle: "fill" },
+  T: {
+    value: 4,
+    opacity: 0.62,
+    renderMode: "sheet",
+    volumeDensity: CLASS_DENSITY_DEFAULT,
+    volumeStyle: "fill",
+  },
+  S: {
+    value: 35,
+    opacity: 0.62,
+    renderMode: "sheet",
+    volumeDensity: CLASS_DENSITY_DEFAULT,
+    volumeStyle: "fill",
+  },
+  rho: {
+    value: 27.8,
+    opacity: 0.62,
+    renderMode: "sheet",
+    volumeDensity: CLASS_DENSITY_DEFAULT,
+    volumeStyle: "fill",
+  },
 };
 
 const SEA_ICE_THRESHOLD = 0.3;
 const SURFACE_FIELD_HEIGHT_M = 18;
 const SEA_ICE_HEIGHT_M = 65;
 const SEA_ICE_OPACITY = 0.55;
-const MOBILE_PANEL_BREAKPOINT_PX = 820;
+const MOBILE_PANEL_BREAKPOINT_PX = 960;
 const PANEL_SIZE_STORAGE_KEY = "gs_panel_size_v1";
 const HORIZONTAL_RENDERER_STORAGE_KEY = "gs_horizontal_renderer_v1";
 const ISOSURFACE_RENDERER_STORAGE_KEY = "gs_isosurface_renderer_v1";
 const TUTORIAL_SEEN_STORAGE_KEY = "gs_tutorial_seen_v1";
 const PANEL_MIN_WIDTH = 300;
 const PANEL_MIN_HEIGHT = 320;
-const PANEL_MAX_WIDTH = 620;
+const PANEL_MAX_WIDTH = 680;
 const PANEL_MAX_HEIGHT = 900;
-const PANEL_FIXED_DESKTOP_WIDTH = 352;
+const PANEL_FIXED_DESKTOP_WIDTH = 392;
 const PANEL_SAFE_MIN_WIDTH = 240;
 const PANEL_SAFE_MIN_HEIGHT = 280;
 const PLOTLY_OVERVIEW_CAMERA = {
@@ -720,7 +942,7 @@ function clampPanelSize(
   viewportHeight: number,
   isMobile: boolean
 ) {
-  const viewportMargin = isMobile ? 24 : 32;
+  const viewportMargin = isMobile ? 16 : 32;
   const availableWidth = Math.max(PANEL_SAFE_MIN_WIDTH, viewportWidth - viewportMargin);
   const availableHeight = Math.max(PANEL_SAFE_MIN_HEIGHT, viewportHeight - viewportMargin);
   const minWidth = Math.min(PANEL_MIN_WIDTH, availableWidth);
@@ -739,8 +961,8 @@ function defaultPanelSize(viewportWidth: number, viewportHeight: number, isMobil
   if (isMobile) {
     return clampPanelSize(
       {
-        width: viewportWidth - 24,
-        height: Math.max(420, viewportHeight - 24),
+        width: viewportWidth - 16,
+        height: Math.max(360, Math.round(viewportHeight * 0.74)),
       },
       viewportWidth,
       viewportHeight,
@@ -776,7 +998,11 @@ function readPanelSize(viewportWidth: number, viewportHeight: number) {
   } catch {
     // ignore
   }
-  return defaultPanelSize(viewportWidth, viewportHeight, viewportWidth <= MOBILE_PANEL_BREAKPOINT_PX);
+  return defaultPanelSize(
+    viewportWidth,
+    viewportHeight,
+    viewportWidth <= MOBILE_PANEL_BREAKPOINT_PX
+  );
 }
 
 function makeTicks(min: number, max: number, tickCount: number) {
@@ -786,7 +1012,8 @@ function makeTicks(min: number, max: number, tickCount: number) {
   const rawStep = Math.abs(span) / Math.max(1, tickCount - 1);
   const exponent = Math.floor(Math.log10(Math.max(rawStep, 1e-9)));
   const fraction = rawStep / 10 ** exponent;
-  const niceFraction = fraction <= 1.5 ? 1 : fraction <= 3 ? 2 : fraction <= 4.5 ? 2.5 : fraction <= 7 ? 5 : 10;
+  const niceFraction =
+    fraction <= 1.5 ? 1 : fraction <= 3 ? 2 : fraction <= 4.5 ? 2.5 : fraction <= 7 ? 5 : 10;
   const step = niceFraction * 10 ** exponent;
   const start = Math.ceil(Math.min(min, max) / step) * step;
   const end = Math.floor(Math.max(min, max) / step) * step;
@@ -795,7 +1022,10 @@ function makeTicks(min: number, max: number, tickCount: number) {
     out.push(Number(v.toFixed(6)));
     if (out.length >= 240) break;
   }
-  if (out.length < 2) return [Number(min.toFixed(6)), Number(max.toFixed(6))].filter((v, i, arr) => arr.indexOf(v) === i);
+  if (out.length < 2)
+    return [Number(min.toFixed(6)), Number(max.toFixed(6))].filter(
+      (v, i, arr) => arr.indexOf(v) === i
+    );
   return out;
 }
 
@@ -926,7 +1156,8 @@ function downsampleHorizontalGrid(
   maxLon: number,
   maxLat: number
 ): HorizontalGrid {
-  if (!values.length || !values[0]?.length || !lon.length || !lat.length) return { values, lon, lat };
+  if (!values.length || !values[0]?.length || !lon.length || !lat.length)
+    return { values, lon, lat };
   if (lon.length <= maxLon && lat.length <= maxLat) return { values, lon, lat };
   const lonIdx = sampleIndices(lon.length, maxLon);
   const latIdx = sampleIndices(lat.length, maxLat);
@@ -1073,7 +1304,12 @@ function sample3DFieldAlongTransect(opts: {
       const v10 = Number(data[kOffset + yb.i0 * nx + xb.i1]);
       const v01 = Number(data[kOffset + yb.i1 * nx + xb.i0]);
       const v11 = Number(data[kOffset + yb.i1 * nx + xb.i1]);
-      if (!Number.isFinite(v00) || !Number.isFinite(v10) || !Number.isFinite(v01) || !Number.isFinite(v11)) {
+      if (
+        !Number.isFinite(v00) ||
+        !Number.isFinite(v10) ||
+        !Number.isFinite(v01) ||
+        !Number.isFinite(v11)
+      ) {
         row[i] = Number.NaN;
         continue;
       }
@@ -1187,7 +1423,8 @@ function buildIsoSurfaceSheet(opts: {
           break;
         }
         const crosses =
-          (prevValue < isoValue && sample > isoValue) || (prevValue > isoValue && sample < isoValue);
+          (prevValue < isoValue && sample > isoValue) ||
+          (prevValue > isoValue && sample < isoValue);
         if (crosses) {
           const span = sample - prevValue;
           const t = Math.abs(span) > 1e-9 ? (isoValue - prevValue) / span : 0;
@@ -1220,9 +1457,18 @@ function buildIsoThresholdClasses(opts: {
 }): IsoVolumeClassRender {
   const { data, nz, ny, nx, lon, lat, z, varId, threshold, spatialMask, playing, density } = opts;
   const sampleDensity = clampClassDensity(density);
-  const nxLimit = Math.max(8, Math.round((playing ? CLASS_MAX_XY_PLAYING : CLASS_MAX_XY_PAUSED) * sampleDensity));
-  const nyLimit = Math.max(8, Math.round((playing ? CLASS_MAX_XY_PLAYING : CLASS_MAX_XY_PAUSED) * sampleDensity));
-  const nzLimit = Math.max(4, Math.round((playing ? CLASS_MAX_Z_PLAYING : CLASS_MAX_Z_PAUSED) * sampleDensity));
+  const nxLimit = Math.max(
+    8,
+    Math.round((playing ? CLASS_MAX_XY_PLAYING : CLASS_MAX_XY_PAUSED) * sampleDensity)
+  );
+  const nyLimit = Math.max(
+    8,
+    Math.round((playing ? CLASS_MAX_XY_PLAYING : CLASS_MAX_XY_PAUSED) * sampleDensity)
+  );
+  const nzLimit = Math.max(
+    4,
+    Math.round((playing ? CLASS_MAX_Z_PLAYING : CLASS_MAX_Z_PAUSED) * sampleDensity)
+  );
   const xIdx = sampleIndices(nx, nxLimit);
   const yIdx = sampleIndices(ny, nyLimit);
   const zIdx = sampleIndices(nz, nzLimit);
@@ -1230,7 +1476,9 @@ function buildIsoThresholdClasses(opts: {
   const zeroMasked = isZeroMaskedVar(varId);
   const perClassCap = Math.max(
     120,
-    Math.round((playing ? CLASS_POINTS_PER_CLASS_PLAYING : CLASS_POINTS_PER_CLASS_PAUSED) * sampleDensity)
+    Math.round(
+      (playing ? CLASS_POINTS_PER_CLASS_PLAYING : CLASS_POINTS_PER_CLASS_PAUSED) * sampleDensity
+    )
   );
   const labels = splitClassLabels(varId, threshold);
   const traces = [
@@ -1293,7 +1541,13 @@ function buildIsoThresholdClasses(opts: {
   return {
     traces: traces
       .filter((trace) => trace.x.length > 0)
-      .map((trace) => ({ label: trace.label, value: trace.value, x: trace.x, y: trace.y, z: trace.z })),
+      .map((trace) => ({
+        label: trace.label,
+        value: trace.value,
+        x: trace.x,
+        y: trace.y,
+        z: trace.z,
+      })),
     cmin: 0,
     cmax: 1,
     colorscale: buildThresholdSplitColorscale(),
@@ -1356,7 +1610,10 @@ function detectZeroHaloBoundaries(
   const countsLookLikeZeroHalo = (counts: { finite: number; zero: number; nonZero: number }) => {
     if (counts.finite <= 0 || counts.zero <= 0) return false;
     if (counts.nonZero === 0) return true;
-    return counts.zero / counts.finite >= sparseHaloZeroFraction && counts.nonZero <= sparseHaloMaxNonZero;
+    return (
+      counts.zero / counts.finite >= sparseHaloZeroFraction &&
+      counts.nonZero <= sparseHaloMaxNonZero
+    );
   };
 
   for (let row = 0; row < ny; row++) {
@@ -1426,7 +1683,10 @@ function detectZeroHaloBoundaries2D(
   const countsLookLikeZeroHalo = (counts: { finite: number; zero: number; nonZero: number }) => {
     if (counts.finite <= 0 || counts.zero <= 0) return false;
     if (counts.nonZero === 0) return true;
-    return counts.zero / counts.finite >= sparseHaloZeroFraction && counts.nonZero <= sparseHaloMaxNonZero;
+    return (
+      counts.zero / counts.finite >= sparseHaloZeroFraction &&
+      counts.nonZero <= sparseHaloMaxNonZero
+    );
   };
 
   if (checkRows) {
@@ -1480,7 +1740,8 @@ function maskZeroHaloBoundaries2D(
 }
 
 function classCenters(cmin: number, cmax: number, step: number) {
-  if (!Number.isFinite(cmin) || !Number.isFinite(cmax) || !Number.isFinite(step) || step <= 0) return [];
+  if (!Number.isFinite(cmin) || !Number.isFinite(cmax) || !Number.isFinite(step) || step <= 0)
+    return [];
   const min = Math.min(cmin, cmax);
   const max = Math.max(cmin, cmax);
   const out: number[] = [];
@@ -1509,7 +1770,10 @@ function classColorAt(value: number, cmin: number, cmax: number, palette: RGB[])
   }
   const safePalette = palette.length ? palette : FALLBACK_FIELD_PALETTE;
   const t = clamp((value - cmin) / (cmax - cmin), 0, 1);
-  const idx = Math.max(0, Math.min(safePalette.length - 1, Math.round(t * (safePalette.length - 1))));
+  const idx = Math.max(
+    0,
+    Math.min(safePalette.length - 1, Math.round(t * (safePalette.length - 1)))
+  );
   const c = safePalette[idx];
   return `rgb(${c.r},${c.g},${c.b})`;
 }
@@ -1664,7 +1928,14 @@ function RangeNudgeSlider(props: {
 
   if (buttonLayout === "horizontal") {
     return (
-      <div style={{ display: "grid", gridTemplateColumns: "auto 1fr auto", alignItems: "center", gap: 6 }}>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "auto 1fr auto",
+          alignItems: "center",
+          gap: 6,
+        }}
+      >
         <button
           type="button"
           className="tab"
@@ -1751,6 +2022,7 @@ export default function App() {
     draw: null,
     class: null,
     isosurface: null,
+    particles: null,
     masks: null,
   });
   const lastThreeViewportKeyRef = useRef<string>("");
@@ -1909,9 +2181,8 @@ export default function App() {
   const [depthFocusM, setDepthFocusM] = useState(1800);
   const [deepRatio, setDeepRatio] = useState(0.18);
   const [bathySource, setBathySource] = useState<BathySourceId>(DEFAULT_BATHY_SOURCE);
-  const [colorSettings, setColorSettings] = useState<Record<VarId, VarColorSettings>>(
-    DEFAULT_COLOR_SETTINGS
-  );
+  const [colorSettings, setColorSettings] =
+    useState<Record<VarId, VarColorSettings>>(DEFAULT_COLOR_SETTINGS);
   useEffect(() => {
     try {
       window.localStorage.setItem(HORIZONTAL_RENDERER_STORAGE_KEY, horizontalRenderer);
@@ -1931,10 +2202,11 @@ export default function App() {
     S: true,
     rho: true,
   });
-  const [fieldColormapByVar, setFieldColormapByVar] = useState<Record<VarId, FieldColormapId>>(
-    DEFAULT_FIELD_COLORMAP
+  const [fieldColormapByVar, setFieldColormapByVar] =
+    useState<Record<VarId, FieldColormapId>>(DEFAULT_FIELD_COLORMAP);
+  const [interfaceColormap, setInterfaceColormap] = useState<FieldColormapId>(
+    DEFAULT_INTERFACE_COLORMAP
   );
-  const [interfaceColormap, setInterfaceColormap] = useState<FieldColormapId>(DEFAULT_INTERFACE_COLORMAP);
   const [bathyColormap, setBathyColormap] = useState<BathyColormapId>(DEFAULT_BATHY_COLORMAP);
 
   const [colorInputByVar, setColorInputByVar] = useState<Record<VarId, ClassInputSettings>>({
@@ -1951,9 +2223,8 @@ export default function App() {
       max: String(DEFAULT_COLOR_SETTINGS.rho.cmax),
     },
   });
-  const [classSettingsByVar, setClassSettingsByVar] = useState<Record<VarId, ClassSettings>>(
-    DEFAULT_CLASS_SETTINGS
-  );
+  const [classSettingsByVar, setClassSettingsByVar] =
+    useState<Record<VarId, ClassSettings>>(DEFAULT_CLASS_SETTINGS);
   const [classDensity, setClassDensity] = useState(() => {
     try {
       if (typeof window !== "undefined") {
@@ -1982,17 +2253,22 @@ export default function App() {
       max: String(DEFAULT_CLASS_SETTINGS.rho.max),
     },
   });
-  const [isoSurfaceSettingsByVar, setIsoSurfaceSettingsByVar] = useState<Record<VarId, IsoSurfaceSettings>>(
-    DEFAULT_ISOSURFACE_SETTINGS
-  );
-  const [isoSurfaceInputByVar, setIsoSurfaceInputByVar] = useState<Record<VarId, IsoSurfaceInputSettings>>({
+  const [isoSurfaceSettingsByVar, setIsoSurfaceSettingsByVar] = useState<
+    Record<VarId, IsoSurfaceSettings>
+  >(DEFAULT_ISOSURFACE_SETTINGS);
+  const [isoSurfaceInputByVar, setIsoSurfaceInputByVar] = useState<
+    Record<VarId, IsoSurfaceInputSettings>
+  >({
     T: { value: String(DEFAULT_ISOSURFACE_SETTINGS.T.value) },
     S: { value: String(DEFAULT_ISOSURFACE_SETTINGS.S.value) },
     rho: { value: String(DEFAULT_ISOSURFACE_SETTINGS.rho.value) },
   });
   useEffect(() => {
     try {
-      window.localStorage.setItem(CLASS_DENSITY_STORAGE_KEY, String(clampClassDensity(classDensity)));
+      window.localStorage.setItem(
+        CLASS_DENSITY_STORAGE_KEY,
+        String(clampClassDensity(classDensity))
+      );
     } catch {
       // ignore
     }
@@ -2093,9 +2369,7 @@ export default function App() {
   const [metaError, setMetaError] = useState<string | null>(null);
   const [meta, setMeta] = useState<GsZarrMeta | null>(null);
 
-  const [sliceStatus, setSliceStatus] = useState<"off" | "loading" | "ready" | "failed">(
-    "off"
-  );
+  const [sliceStatus, setSliceStatus] = useState<"off" | "loading" | "ready" | "failed">("off");
   const [sliceError, setSliceError] = useState<string | null>(null);
   const [classStatus, setClassStatus] = useState<"off" | "loading" | "ready" | "failed">("off");
   const [classError, setClassError] = useState<string | null>(null);
@@ -2104,9 +2378,7 @@ export default function App() {
   const [eddyStatus, setEddyStatus] = useState<"off" | "loading" | "ready" | "failed">("off");
   const [eddyError, setEddyError] = useState<string | null>(null);
 
-  const [seaIceStatus, setSeaIceStatus] = useState<"off" | "loading" | "ready" | "failed">(
-    "off"
-  );
+  const [seaIceStatus, setSeaIceStatus] = useState<"off" | "loading" | "ready" | "failed">("off");
   const [seaIceError, setSeaIceError] = useState<string | null>(null);
   const [windStatus, setWindStatus] = useState<"off" | "loading" | "ready" | "failed">("off");
   const [windError, setWindError] = useState<string | null>(null);
@@ -2128,16 +2400,60 @@ export default function App() {
   const [seaIceValues, setSeaIceValues] = useState<number[][] | null>(null);
   const [windStress, setWindStress] = useState<{ u: number[][]; v: number[][] } | null>(null);
   const [etaValues, setEtaValues] = useState<number[][] | null>(null);
-  const [columnVelocity, setColumnVelocity] = useState<
-    Array<{ zi: number; u: number[][]; v: number[][] }> | null
-  >(null);
+  const [columnVelocity, setColumnVelocity] = useState<Array<{
+    zi: number;
+    u: number[][];
+    v: number[][];
+  }> | null>(null);
   const [currentsLevels, setCurrentsLevels] = useState(6);
   const [currentsMin, setCurrentsMin] = useState(0);
   const [currentsMax, setCurrentsMax] = useState(0);
   const [currentsGridSpacing, setCurrentsGridSpacing] = useState(12);
-  const [currentsVectorSize, setCurrentsVectorSize] = useState(1);
+  const [currentsVectorSize, setCurrentsVectorSize] = useState(1.25);
   const [currentsFlowSpeed, setCurrentsFlowSpeed] = useState(2.6);
   const [currentsDepthMode, setCurrentsDepthMode] = useState<"selected" | "column">("selected");
+  const [particlesArmed, setParticlesArmed] = useState(false);
+  const [particleSeeds, setParticleSeeds] = useState<ParticleSeed[]>([]);
+  const [particleRunDays, setParticleRunDays] = useState(PARTICLE_RUN_DAYS_DEFAULT);
+  const [particleDirection, setParticleDirection] = useState<1 | -1>(1);
+  const [particleColorMode, setParticleColorMode] = useState<ParticleColorMode>("depth");
+  const [particleScrub, setParticleScrub] = useState(1);
+  const [particlePlaying, setParticlePlaying] = useState(false);
+  const [particleStatus, setParticleStatus] = useState<"idle" | "running" | "done" | "failed">(
+    "idle"
+  );
+  const [particleError, setParticleError] = useState<string | null>(null);
+  const [particleNotice, setParticleNotice] = useState<string | null>(null);
+  const [particleProgress, setParticleProgress] = useState(0);
+  const [particleTrajectories, setParticleTrajectories] = useState<ParticleTrajectory[] | null>(
+    null
+  );
+  const [particleScalarSamples, setParticleScalarSamples] = useState<{
+    mode: VarId;
+    timeIdx: number;
+    trajectoryKey: string;
+    values: number[][];
+  } | null>(null);
+  const [particleScalarStatus, setParticleScalarStatus] = useState<"idle" | "loading" | "failed">(
+    "idle"
+  );
+  const [particleScalarError, setParticleScalarError] = useState<string | null>(null);
+  const [particleInfoTempSamples, setParticleInfoTempSamples] = useState<{
+    timeIdx: number;
+    trajectoryKey: string;
+    values: number[][];
+  } | null>(null);
+  const [particleInfoTempStatus, setParticleInfoTempStatus] = useState<
+    "idle" | "loading" | "failed"
+  >("idle");
+  const [particleInfoIndex, setParticleInfoIndex] = useState(0);
+  const [particleHidden, setParticleHidden] = useState<Record<number, boolean>>({});
+  const particleModeSuppressesBackgroundOverlays =
+    viewMode === "particles" && !(particleStatus === "done" && particleTrajectories?.length);
+  const effectiveShowWind = showWind && !particleModeSuppressesBackgroundOverlays;
+  const effectiveShowCurrents = showCurrents && !particleModeSuppressesBackgroundOverlays;
+  const effectiveShowSeaIce = showSeaIce && !particleModeSuppressesBackgroundOverlays;
+  const effectiveShowEta = showEta && !particleModeSuppressesBackgroundOverlays;
 
   const [bathyInfo, setBathyInfo] = useState<{
     plotly: "loading" | "ready" | "failed";
@@ -2188,13 +2504,31 @@ export default function App() {
   const classInterval = classSettings.interval;
   const classHalfWidth = classSettings.halfWidth;
   const classHalfWidthEffective = Math.max(0.05, classHalfWidth, classInterval * 0.5);
-  const eddyThreshold = Math.max(0.001, Number(eddyThresholdByVar[varId] ?? EDDY_THRESHOLD_DEFAULT[varId]));
-  const eddyTrackHistory = Math.max(1, Math.min(EDDY_TRACK_HISTORY_MAX, Math.round(eddyTrackLength)));
+  const eddyThreshold = Math.max(
+    0.001,
+    Number(eddyThresholdByVar[varId] ?? EDDY_THRESHOLD_DEFAULT[varId])
+  );
+  const eddyTrackHistory = Math.max(
+    1,
+    Math.min(EDDY_TRACK_HISTORY_MAX, Math.round(eddyTrackLength))
+  );
   const eddyMinCellCount = Math.max(6, Math.round(eddyMinCells));
-  const fieldPalette = useMemo(() => paletteForColormapId(fieldColormapByVar[varId]), [fieldColormapByVar, varId]);
-  const fieldContinuousColorscale = useMemo(() => paletteToColorscale(fieldPalette), [fieldPalette]);
-  const interfacePalette = useMemo(() => paletteForColormapId(interfaceColormap), [interfaceColormap]);
-  const interfaceColorscale = useMemo(() => paletteToColorscale(interfacePalette), [interfacePalette]);
+  const fieldPalette = useMemo(
+    () => paletteForColormapId(fieldColormapByVar[varId]),
+    [fieldColormapByVar, varId]
+  );
+  const fieldContinuousColorscale = useMemo(
+    () => paletteToColorscale(fieldPalette),
+    [fieldPalette]
+  );
+  const interfacePalette = useMemo(
+    () => paletteForColormapId(interfaceColormap),
+    [interfaceColormap]
+  );
+  const interfaceColorscale = useMemo(
+    () => paletteToColorscale(interfacePalette),
+    [interfacePalette]
+  );
   const bathyPalette = useMemo(() => paletteForColormapId(bathyColormap), [bathyColormap]);
   const colorscale = useMemo(() => {
     return settings.mode === "discrete"
@@ -2202,7 +2536,10 @@ export default function App() {
       : fieldContinuousColorscale;
   }, [fieldContinuousColorscale, fieldPalette, settings.levels, settings.mode]);
   const colorbarTicks = useMemo(
-    () => (settings.tickCount > 0 ? makeTicks(settings.cmin, settings.cmax, settings.tickCount) : undefined),
+    () =>
+      settings.tickCount > 0
+        ? makeTicks(settings.cmin, settings.cmax, settings.tickCount)
+        : undefined,
     [settings.cmax, settings.cmin, settings.tickCount]
   );
   const isMobileViewport = viewportWidth <= MOBILE_PANEL_BREAKPOINT_PX;
@@ -2215,8 +2552,7 @@ export default function App() {
   const panelLeft = panelPos?.left ?? (isMobileViewport ? 12 : 16);
   const panelReservedLeftPx =
     panelOpen && !isMobileViewport && panelLeft <= 24 ? panelLeft + panelBoxSize.width + 18 : 0;
-  const threeCameraAutoFitKey =
-    `${viewportWidth}x${viewportHeight}|${panelOpen ? 1 : 0}|${bathySource}|${Math.round(panelReservedLeftPx)}`;
+  const threeCameraAutoFitKey = `${viewportWidth}x${viewportHeight}|${panelOpen ? 1 : 0}|${bathySource}|${Math.round(panelReservedLeftPx)}`;
   const feedbackLabelColor =
     themeMode === "day" ? "rgba(15, 23, 42, 0.72)" : "rgba(241, 245, 249, 0.76)";
   const feedbackLinkColor =
@@ -2246,12 +2582,12 @@ export default function App() {
       isoSurfaceSettings.renderMode === "volumeSplit"
     )
       ids.push("interface");
-    if (showColorbarActive && projectOn3d && showEta) ids.push("eta");
-    if (showColorbarActive && projectOn3d && showSeaIce) ids.push("seaIce");
+    if (showColorbarActive && projectOn3d && effectiveShowEta) ids.push("eta");
+    if (showColorbarActive && projectOn3d && effectiveShowSeaIce) ids.push("seaIce");
     if (
       showColorbarActive &&
       projectOn3d &&
-      showCurrents &&
+      effectiveShowCurrents &&
       currentsDepthMode === "column"
     )
       ids.push("currents");
@@ -2265,9 +2601,9 @@ export default function App() {
     projectOn3d,
     showBathy,
     showColorbarActive,
-    showCurrents,
-    showEta,
-    showSeaIce,
+    effectiveShowCurrents,
+    effectiveShowEta,
+    effectiveShowSeaIce,
     viewMode,
   ]);
   const mainColorbarLayout = colorbarLayouts.slots.primary ?? colorbarLayouts.fallback;
@@ -2275,6 +2611,30 @@ export default function App() {
   const etaColorbarLayout = colorbarLayouts.slots.eta ?? colorbarLayouts.fallback;
   const seaIceColorbarLayout = colorbarLayouts.slots.seaIce ?? colorbarLayouts.fallback;
   const currentsColorbarLayout = colorbarLayouts.slots.currents ?? colorbarLayouts.fallback;
+  const panelInsetPx = isMobileViewport ? 8 : 16;
+  const mobilePanelMaxHeight = Math.min(
+    Math.max(PANEL_SAFE_MIN_HEIGHT, viewportHeight - panelInsetPx * 2),
+    Math.max(360, Math.round(viewportHeight * (isMobilePortraitViewport ? 0.78 : 0.86)))
+  );
+  const effectivePanelHeight = isMobileViewport
+    ? Math.min(panelBoxSize.height, mobilePanelMaxHeight)
+    : panelDisplayHeight;
+  const panelStyle = isMobileViewport
+    ? {
+        // Bottom-sheet on phones/tablets: full width, pinned to the bottom,
+        // content-height up to a cap with internal scroll.
+        left: 0,
+        right: 0,
+        bottom: 0,
+        width: "auto" as const,
+        maxHeight: "82dvh",
+      }
+    : {
+        left: panelPos?.left ?? 16,
+        width: panelBoxSize.width,
+        height: effectivePanelHeight,
+        ...(isFullscreen ? { top: 16 } : panelPos ? { top: panelPos.top } : { bottom: 16 }),
+      };
 
   const timeList = meta?.timeIso ?? [];
   const zList = meta?.z ?? [];
@@ -2295,10 +2655,10 @@ export default function App() {
   const activeTimeLabel = timeList[safeTimeIdx] ?? "n/a";
   const activeDepthLabel = zList.length ? `${Math.round(zList[safeDepthIdx])} m` : "n/a";
   const activeOverlaySummary = [
-    showWind ? "wind stress" : null,
-    showCurrents ? "ocean currents" : null,
-    showSeaIce ? "sea ice" : null,
-    showEta ? "sea surface height" : null,
+    effectiveShowWind ? "wind stress" : null,
+    effectiveShowCurrents ? "ocean currents" : null,
+    effectiveShowSeaIce ? "sea ice" : null,
+    effectiveShowEta ? "sea surface height" : null,
   ].filter(Boolean) as string[];
   const activeOverlayList =
     activeOverlaySummary.length <= 1
@@ -2326,7 +2686,7 @@ export default function App() {
         : `Horizontal mode is showing ${horizontalModeLabel}.${activeOverlayText}`
       : viewMode === "transect"
         ? `Zonal mode is showing a west-east section at ${latTarget.toFixed(2)}°N. Slice the latitude target to move the section north or south.${activeOverlayText}`
-      : viewMode === "draw"
+        : viewMode === "draw"
           ? drawMapInstruction
           : viewMode === "class"
             ? `Class mode is showing ${range.title} point-cloud classes between ${classMin} and ${classMax}.${activeOverlayText}`
@@ -2334,13 +2694,229 @@ export default function App() {
               ? isoRenderMode === "volumeSplit"
                 ? `${isoSurfaceSettings.volumeStyle === "fill" ? "Isosurface mode is rendering a filled" : "Isosurface mode is splitting the"} ${variableDisplayLabel(varId).toLowerCase()} volume at ${isoValueLabel} into ${isoSplitLabels.below.toLowerCase()} and ${isoSplitLabels.above.toLowerCase()} classes.${activeOverlayText}`
                 : `Isosurface mode is showing the ${isoValueLabel} ${variableDisplayLabel(varId).toLowerCase()} surface.${activeOverlayText}`
-              : `Eddy mode is showing eddy detections.${activeOverlayText}`;
+              : viewMode === "particles"
+                ? `Particles mode: ${particleSeeds.length} seed${particleSeeds.length === 1 ? "" : "s"} at ${activeDepthLabel}${particleTrajectories ? `, ${particleTrajectories.length} trajectories` : ""}. Set depth, arm "Click to seed", click wet map points, then Run particle tracking.`
+                : `Eddy mode is showing eddy detections.${activeOverlayText}`;
   const currentModeSummary = `${currentModeDescription} Data date: ${activeTimeLabel}. Use the control panel to change modes, layers, time, and depth. Drag to rotate the view, and zoom in or out to see details.`;
   const timeCoverageLabel =
-    timeList.length > 1 ? `${timeList[0]} to ${timeList[timeList.length - 1]}` : timeList[0] ?? "n/a";
+    timeList.length > 1
+      ? `${timeList[0]} to ${timeList[timeList.length - 1]}`
+      : (timeList[0] ?? "n/a");
   const depthCoverageLabel =
-    zList.length > 1 ? `${Math.round(zList[0])} to ${Math.round(zList[zList.length - 1])} m` : "n/a";
+    zList.length > 1
+      ? `${Math.round(zList[0])} to ${Math.round(zList[zList.length - 1])} m`
+      : "n/a";
   const domainLabel = `${lonMin.toFixed(1)} to ${lonMax.toFixed(1)} lon, ${latMin.toFixed(1)} to ${latMax.toFixed(1)} lat`;
+  const availableVars = useMemo(() => {
+    const vars = meta?.variables?.filter((v) => v.available).map((v) => v.id) ?? [];
+    return vars.length ? (vars as VarId[]) : (["T"] as VarId[]);
+  }, [meta]);
+  const hasTemperature = availableVars.includes("T");
+  const hasSalinity = availableVars.includes("S");
+  const hasDensity = availableVars.includes("rho");
+  const particleTrajectoryKey = useMemo(() => {
+    if (!particleTrajectories?.length) return "";
+    return particleTrajectories
+      .map((trajectory) => {
+        const last = trajectory.points[trajectory.points.length - 1];
+        return [
+          trajectory.points.length,
+          trajectory.beached ? 1 : 0,
+          Number(last?.lon ?? 0).toFixed(4),
+          Number(last?.lat ?? 0).toFixed(4),
+          Number(last?.depth ?? 0).toFixed(1),
+        ].join(":");
+      })
+      .join("|");
+  }, [particleTrajectories]);
+  const particleScalarColorMode = isScalarParticleColorMode(particleColorMode)
+    ? particleColorMode
+    : null;
+
+  useEffect(() => {
+    if (!meta || !particleSeeds.length) return;
+    const selectedDepth = Number(meta.z?.[safeDepthIdx] ?? -10);
+    if (!Number.isFinite(selectedDepth)) return;
+    const nextSeeds = particleSeeds.map((seed) => ({
+      ...seed,
+      depth: resolveParticleSeedDepth(selectedDepth, seed.bottomDepth) ?? selectedDepth,
+    }));
+    const changed = nextSeeds.some(
+      (seed, idx) => Math.abs(seed.depth - particleSeeds[idx].depth) > 1e-6
+    );
+    if (changed) {
+      setParticleSeeds(nextSeeds);
+      setParticleTrajectories(null);
+      setParticlePlaying(false);
+      setParticleScrub(1);
+      setParticleInfoIndex(0);
+      setParticleHidden({});
+      setParticleStatus("idle");
+      setParticleNotice(`Seed depth updated to ${Math.round(selectedDepth)} m; run again.`);
+    }
+  }, [meta, particleSeeds, safeDepthIdx]);
+
+  useEffect(() => {
+    const count = particleTrajectories?.length ?? 0;
+    if (!count) {
+      if (particleInfoIndex !== 0) setParticleInfoIndex(0);
+      return;
+    }
+    if (particleInfoIndex >= count) setParticleInfoIndex(count - 1);
+  }, [particleInfoIndex, particleTrajectories]);
+
+  useEffect(() => {
+    if (!meta || !particleTrajectories?.length || !particleScalarColorMode) {
+      setParticleScalarStatus("idle");
+      setParticleScalarError(null);
+      return;
+    }
+    if (!availableVars.includes(particleScalarColorMode)) {
+      setParticleScalarSamples(null);
+      setParticleScalarStatus("failed");
+      setParticleScalarError(
+        `${variableDisplayLabel(particleScalarColorMode)} is not available in this store.`
+      );
+      return;
+    }
+
+    let cancelled = false;
+    setParticleScalarStatus("loading");
+    setParticleScalarError(null);
+    load3DFieldAtTime({
+      storeUrl: meta.storeUrl,
+      varId: particleScalarColorMode,
+      tIndex: safeTimeIdx,
+    })
+      .then((volume) => {
+        if (cancelled) return;
+        const sampler = makeScalarSampler(
+          {
+            lon: meta.lon,
+            lat: meta.lat,
+            z: meta.z,
+            zl: meta.zl,
+            ny: meta.lat.length,
+            nx: meta.lon.length,
+          },
+          { data: volume.data },
+          0,
+          volume.nz
+        );
+        const zeroMasked = isZeroMaskedVar(particleScalarColorMode);
+        const values = particleTrajectories.map((trajectory) =>
+          trajectory.points.map((point) => {
+            const sample = sampler(point.lon, point.lat, point.depth);
+            if (sample == null || !Number.isFinite(sample)) return Number.NaN;
+            if (zeroMasked && Math.abs(sample) < 1e-12) return Number.NaN;
+            return sample;
+          })
+        );
+        if (!finiteNestedRange(values)) {
+          throw new Error(
+            `No valid ${variableDisplayLabel(particleScalarColorMode).toLowerCase()} samples along these trajectories.`
+          );
+        }
+        setParticleScalarSamples({
+          mode: particleScalarColorMode,
+          timeIdx: safeTimeIdx,
+          trajectoryKey: particleTrajectoryKey,
+          values,
+        });
+        setParticleScalarStatus("idle");
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setParticleScalarSamples(null);
+        setParticleScalarStatus("failed");
+        setParticleScalarError(e instanceof Error ? e.message : String(e));
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    availableVars,
+    meta,
+    particleScalarColorMode,
+    particleTrajectories,
+    particleTrajectoryKey,
+    safeTimeIdx,
+  ]);
+
+  useEffect(() => {
+    if (!particlePlaying || !particleTrajectories?.length) return;
+    const SWEEP_SECONDS = 8;
+    let raf = 0;
+    let last = 0;
+    const tick = (ts: number) => {
+      if (!last) last = ts;
+      const delta = Math.min(0.05, (ts - last) / 1000);
+      last = ts;
+      setParticleScrub((prev) => {
+        const next = prev + delta / SWEEP_SECONDS;
+        return next > 1 ? next - 1 : next;
+      });
+      raf = window.requestAnimationFrame(tick);
+    };
+    raf = window.requestAnimationFrame(tick);
+    return () => {
+      window.cancelAnimationFrame(raf);
+    };
+  }, [particlePlaying, particleTrajectories]);
+
+  useEffect(() => {
+    if (!meta || !particleTrajectories?.length || !hasTemperature) {
+      setParticleInfoTempSamples(null);
+      setParticleInfoTempStatus("idle");
+      return;
+    }
+    let cancelled = false;
+    setParticleInfoTempStatus("loading");
+    load3DFieldAtTime({
+      storeUrl: meta.storeUrl,
+      varId: "T",
+      tIndex: safeTimeIdx,
+    })
+      .then((volume) => {
+        if (cancelled) return;
+        const sampler = makeScalarSampler(
+          {
+            lon: meta.lon,
+            lat: meta.lat,
+            z: meta.z,
+            zl: meta.zl,
+            ny: meta.lat.length,
+            nx: meta.lon.length,
+          },
+          { data: volume.data },
+          0,
+          volume.nz
+        );
+        const values = particleTrajectories.map((trajectory) =>
+          trajectory.points.map((point) => {
+            const sample = sampler(point.lon, point.lat, point.depth);
+            return sample == null || !Number.isFinite(sample) ? Number.NaN : sample;
+          })
+        );
+        setParticleInfoTempSamples({
+          timeIdx: safeTimeIdx,
+          trajectoryKey: particleTrajectoryKey,
+          values,
+        });
+        setParticleInfoTempStatus("idle");
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setParticleInfoTempSamples(null);
+        setParticleInfoTempStatus("failed");
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [hasTemperature, meta, particleTrajectories, particleTrajectoryKey, safeTimeIdx]);
+
   const loadErrors = [
     metaStatus === "failed" && metaError ? `Metadata: ${metaError}` : null,
     sliceStatus === "failed" && sliceError ? `Slice: ${sliceError}` : null,
@@ -2353,13 +2929,6 @@ export default function App() {
     etaStatus === "failed" && etaError ? `Sea surface height: ${etaError}` : null,
   ].filter(Boolean) as string[];
 
-  const availableVars = useMemo(() => {
-    const vars = meta?.variables?.filter((v) => v.available).map((v) => v.id) ?? [];
-    return vars.length ? (vars as VarId[]) : (["T"] as VarId[]);
-  }, [meta]);
-  const hasTemperature = availableVars.includes("T");
-  const hasSalinity = availableVars.includes("S");
-  const hasDensity = availableVars.includes("rho");
   const tutorialStep = TUTORIAL_STEPS[Math.min(tutorialStepIndex, TUTORIAL_STEPS.length - 1)];
   const tutorialScalarVar = availableVars.includes("T") ? "T" : (availableVars[0] ?? "T");
 
@@ -2461,9 +3030,21 @@ export default function App() {
       return;
     }
 
+    if (step.id === "overlays") {
+      setViewMode("horizontal");
+      setHorizontalRenderer("three");
+      activateScalarVariable(tutorialScalarVar);
+      return;
+    }
+
     if (step.id === "class") {
       setViewMode("class");
       activateScalarVariable(tutorialScalarVar);
+      return;
+    }
+
+    if (step.id === "particles") {
+      setViewMode("particles");
       return;
     }
 
@@ -2613,7 +3194,15 @@ export default function App() {
       window.removeEventListener("resize", schedule);
       panelEl?.removeEventListener("scroll", schedule);
     };
-  }, [measureTutorialLayout, panelOpen, panelPos, panelSize, tutorialState, tutorialStepIndex, viewMode]);
+  }, [
+    measureTutorialLayout,
+    panelOpen,
+    panelPos,
+    panelSize,
+    tutorialState,
+    tutorialStepIndex,
+    viewMode,
+  ]);
 
   useEffect(() => {
     const nextMin = String(classSettings.min);
@@ -2639,7 +3228,14 @@ export default function App() {
         [varId]: { min: nextMin, max: nextMax },
       };
     });
-  }, [classSettings.max, classSettings.min, colorScaleUsesClassRange, settings.cmax, settings.cmin, varId]);
+  }, [
+    classSettings.max,
+    classSettings.min,
+    colorScaleUsesClassRange,
+    settings.cmax,
+    settings.cmin,
+    varId,
+  ]);
 
   useEffect(() => {
     const next = String(Number(isoSurfaceSettings.value.toFixed(4)));
@@ -2862,8 +3458,20 @@ export default function App() {
       const currentMax = colorScaleUsesClassRange ? classSettings.max : settings.cmax;
       const next =
         bound === "min"
-          ? nudgeBoundedValue(currentMin, direction, colorScaleStep, Number.NEGATIVE_INFINITY, currentMax)
-          : nudgeBoundedValue(currentMax, direction, colorScaleStep, currentMin, Number.POSITIVE_INFINITY);
+          ? nudgeBoundedValue(
+              currentMin,
+              direction,
+              colorScaleStep,
+              Number.NEGATIVE_INFINITY,
+              currentMax
+            )
+          : nudgeBoundedValue(
+              currentMax,
+              direction,
+              colorScaleStep,
+              currentMin,
+              Number.POSITIVE_INFINITY
+            );
       if (colorScaleUsesClassRange) {
         setClassSettingsByVar((prev) => ({
           ...prev,
@@ -2919,10 +3527,7 @@ export default function App() {
     const raw = (eddyThresholdInputByVar[varId] ?? "").trim();
     const parsed = parseFiniteNumberInput(raw);
     const fallback = eddyThresholdByVar[varId] ?? EDDY_THRESHOLD_DEFAULT[varId];
-    const next =
-      parsed != null && parsed > 0
-        ? parsed
-        : fallback;
+    const next = parsed != null && parsed > 0 ? parsed : fallback;
     setEddyThresholdByVar((prev) => ({ ...prev, [varId]: next }));
     setEddyThresholdInputByVar((prev) => ({ ...prev, [varId]: String(next) }));
   }, [eddyThresholdByVar, eddyThresholdInputByVar, varId]);
@@ -2982,10 +3587,12 @@ export default function App() {
 
   const drawTransectLengthKm = drawnTransectPath?.totalDistanceKm ?? 0;
   const viewModeDescription =
-    VIEW_MODE_DESCRIPTIONS[(viewModeHover ?? (viewMode === "eddies" ? "horizontal" : viewMode)) as Exclude<
-      ViewMode,
-      "eddies"
-    >];
+    VIEW_MODE_DESCRIPTIONS[
+      (viewModeHover ?? (viewMode === "eddies" ? "horizontal" : viewMode)) as Exclude<
+        ViewMode,
+        "eddies"
+      >
+    ];
   const showPlotlyPerformanceHint =
     viewMode === "transect" ||
     viewMode === "draw" ||
@@ -2996,8 +3603,8 @@ export default function App() {
     !drawTransectArmed && drawTransectPoints.length < 2
       ? 'Draw mode is idle. Adjust the view angle first, then click "Draw line".'
       : drawTransectArmed && drawTransectPoints.length === 0
-        ? 'Move gently and slowly over the map, then click the transect start point.'
-      : drawTransectArmed && drawTransectPoints.length === 1
+        ? "Move gently and slowly over the map, then click the transect start point."
+        : drawTransectArmed && drawTransectPoints.length === 1
           ? "Move gently and slowly over the map to preview the line, then click the transect end point."
           : drawTransectPoints.length >= 2
             ? `Transect length: ${drawTransectLengthKm.toFixed(0)} km. Click "Clear" to remove it, then adjust the angle and click "Draw line" to start again.`
@@ -3023,7 +3630,9 @@ export default function App() {
       lastDrawCameraFocusKeyRef.current = null;
       return;
     }
-    const key = drawTransectPoints.map((point) => `${point.lon.toFixed(4)},${point.lat.toFixed(4)}`).join("|");
+    const key = drawTransectPoints
+      .map((point) => `${point.lon.toFixed(4)},${point.lat.toFixed(4)}`)
+      .join("|");
     if (key === lastDrawCameraFocusKeyRef.current) return;
     lastDrawCameraFocusKeyRef.current = key;
     setDrawCameraFocusNonce((value) => value + 1);
@@ -3031,14 +3640,25 @@ export default function App() {
 
   const horizontalValuesMasked = useMemo(() => {
     if (!meta || !horizontalValues) return horizontalValues;
-    const boundaryMasked = maskZeroHaloBoundaries2D(horizontalValues, { checkRows: true, checkCols: true });
+    const boundaryMasked = maskZeroHaloBoundaries2D(horizontalValues, {
+      checkRows: true,
+      checkCols: true,
+    });
     return applySpatialMaskToHorizontal(boundaryMasked, meta.lon, meta.lat, spatialMask);
   }, [horizontalValues, meta, spatialMask]);
 
   const transectValuesMasked = useMemo(() => {
     if (!transectValues || !activeTransectPath) return transectValues;
-    const boundaryMasked = maskZeroHaloBoundaries2D(transectValues, { checkRows: false, checkCols: true });
-    return applySpatialMaskToTransect(boundaryMasked, activeTransectPath.lon, activeTransectPath.lat, spatialMask);
+    const boundaryMasked = maskZeroHaloBoundaries2D(transectValues, {
+      checkRows: false,
+      checkCols: true,
+    });
+    return applySpatialMaskToTransect(
+      boundaryMasked,
+      activeTransectPath.lon,
+      activeTransectPath.lat,
+      spatialMask
+    );
   }, [activeTransectPath, spatialMask, transectValues]);
 
   const horizontalRender = useMemo<HorizontalGrid | null>(() => {
@@ -3085,12 +3705,13 @@ export default function App() {
   );
   const drawAutoColorRangeActive =
     viewMode === "draw" && Boolean(drawAutoColorRangeByVar[varId] && drawTransectAutoRange);
-  const drawDisplayedColorInput = drawAutoColorRangeActive && drawTransectAutoRange
-    ? {
-        min: String(Number(drawTransectAutoRange.min.toFixed(3))),
-        max: String(Number(drawTransectAutoRange.max.toFixed(3))),
-      }
-    : null;
+  const drawDisplayedColorInput =
+    drawAutoColorRangeActive && drawTransectAutoRange
+      ? {
+          min: String(Number(drawTransectAutoRange.min.toFixed(3))),
+          max: String(Number(drawTransectAutoRange.max.toFixed(3))),
+        }
+      : null;
 
   const seaIceRender = useMemo<HorizontalGrid | null>(() => {
     if (!meta || !seaIceValues) return null;
@@ -3165,10 +3786,10 @@ export default function App() {
   const movieFrameReady =
     metaStatus === "ready" &&
     sliceStatus !== "loading" &&
-    (!showSeaIce || seaIceStatus !== "loading") &&
-    (!showWind || windStatus !== "loading") &&
-    (!showCurrents || currentsStatus !== "loading") &&
-    (!showEta || etaStatus !== "loading");
+    (!effectiveShowSeaIce || seaIceStatus !== "loading") &&
+    (!effectiveShowWind || windStatus !== "loading") &&
+    (!effectiveShowCurrents || currentsStatus !== "loading") &&
+    (!effectiveShowEta || etaStatus !== "loading");
 
   useEffect(() => {
     if (!playing || !timeList.length || !movieFrameReady) return;
@@ -3337,9 +3958,18 @@ export default function App() {
           if (cancelled) return;
 
           const density = clampClassDensity(classDensity);
-          const nxLimit = Math.max(8, Math.round((playing ? CLASS_MAX_XY_PLAYING : CLASS_MAX_XY_PAUSED) * density));
-          const nyLimit = Math.max(8, Math.round((playing ? CLASS_MAX_XY_PLAYING : CLASS_MAX_XY_PAUSED) * density));
-          const nzLimit = Math.max(4, Math.round((playing ? CLASS_MAX_Z_PLAYING : CLASS_MAX_Z_PAUSED) * density));
+          const nxLimit = Math.max(
+            8,
+            Math.round((playing ? CLASS_MAX_XY_PLAYING : CLASS_MAX_XY_PAUSED) * density)
+          );
+          const nyLimit = Math.max(
+            8,
+            Math.round((playing ? CLASS_MAX_XY_PLAYING : CLASS_MAX_XY_PAUSED) * density)
+          );
+          const nzLimit = Math.max(
+            4,
+            Math.round((playing ? CLASS_MAX_Z_PLAYING : CLASS_MAX_Z_PAUSED) * density)
+          );
           const xIdx = sampleIndices(full.nx, nxLimit);
           const yIdx = sampleIndices(full.ny, nyLimit);
           const zIdx = sampleIndices(full.nz, nzLimit);
@@ -3353,7 +3983,9 @@ export default function App() {
           const centers = classCenters(classMin, classMax, classInterval);
           const perClassCap = Math.max(
             80,
-            Math.round((playing ? CLASS_POINTS_PER_CLASS_PLAYING : CLASS_POINTS_PER_CLASS_PAUSED) * density)
+            Math.round(
+              (playing ? CLASS_POINTS_PER_CLASS_PLAYING : CLASS_POINTS_PER_CLASS_PAUSED) * density
+            )
           );
 
           if (!centers.length) {
@@ -3532,8 +4164,10 @@ export default function App() {
           setEddyError(null);
 
           const historyCount = Math.max(1, Math.min(timeList.length, eddyTrackHistory));
-          const frameIndices = Array.from({ length: historyCount }, (_, offset) =>
-            (safeTimeIdx - (historyCount - 1 - offset) + timeList.length) % timeList.length
+          const frameIndices = Array.from(
+            { length: historyCount },
+            (_, offset) =>
+              (safeTimeIdx - (historyCount - 1 - offset) + timeList.length) % timeList.length
           );
           const frameValues = await Promise.all(
             frameIndices.map((tIndex) =>
@@ -3553,7 +4187,10 @@ export default function App() {
           );
 
           const detection = detectAndTrackEddies(
-            frameIndices.map((tIndex, index) => ({ timeIndex: tIndex, values: eddyFrameValues[index] })),
+            frameIndices.map((tIndex, index) => ({
+              timeIndex: tIndex,
+              values: eddyFrameValues[index],
+            })),
             meta.lon,
             meta.lat,
             {
@@ -3698,7 +4335,7 @@ export default function App() {
   ]);
 
   useEffect(() => {
-    if (!meta || metaStatus !== "ready" || !projectOn3d || !showSeaIce) {
+    if (!meta || metaStatus !== "ready" || !projectOn3d || !effectiveShowSeaIce) {
       setSeaIceStatus("off");
       setSeaIceError(null);
       setSeaIceValues(null);
@@ -3725,10 +4362,10 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [meta, metaStatus, projectOn3d, safeTimeIdx, showSeaIce]);
+  }, [effectiveShowSeaIce, meta, metaStatus, projectOn3d, safeTimeIdx]);
 
   useEffect(() => {
-    if (!meta || metaStatus !== "ready" || !projectOn3d || !showWind) {
+    if (!meta || metaStatus !== "ready" || !projectOn3d || !effectiveShowWind) {
       setWindStatus("off");
       setWindError(null);
       setWindStress(null);
@@ -3755,10 +4392,10 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [meta, metaStatus, projectOn3d, safeTimeIdx, showWind]);
+  }, [effectiveShowWind, meta, metaStatus, projectOn3d, safeTimeIdx]);
 
   useEffect(() => {
-    if (!meta || metaStatus !== "ready" || !projectOn3d || !showCurrents) {
+    if (!meta || metaStatus !== "ready" || !projectOn3d || !effectiveShowCurrents) {
       setCurrentsStatus("off");
       setCurrentsError(null);
       setColumnVelocity(null);
@@ -3784,9 +4421,11 @@ export default function App() {
     setCurrentsError(null);
     Promise.all(
       uniqueIdxs.map((zi) =>
-        loadVelocity2D({ storeUrl: meta.storeUrl, tIndex: safeTimeIdx, zIndex: zi }).then(
-          (d) => ({ zi, u: d.u, v: d.v })
-        )
+        loadVelocity2D({ storeUrl: meta.storeUrl, tIndex: safeTimeIdx, zIndex: zi }).then((d) => ({
+          zi,
+          u: d.u,
+          v: d.v,
+        }))
       )
     )
       .then((slices) => {
@@ -3811,13 +4450,13 @@ export default function App() {
     projectOn3d,
     safeTimeIdx,
     safeDepthIdx,
-    showCurrents,
+    effectiveShowCurrents,
     currentsLevels,
     currentsDepthMode,
   ]);
 
   useEffect(() => {
-    if (!meta || metaStatus !== "ready" || !projectOn3d || !showEta) {
+    if (!meta || metaStatus !== "ready" || !projectOn3d || !effectiveShowEta) {
       setEtaStatus("off");
       setEtaError(null);
       setEtaValues(null);
@@ -3844,7 +4483,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [meta, metaStatus, projectOn3d, safeTimeIdx, showEta]);
+  }, [effectiveShowEta, meta, metaStatus, projectOn3d, safeTimeIdx]);
 
   useEffect(() => {
     if (!meta || metaStatus !== "ready" || !projectOn3d || !playing) return;
@@ -3866,9 +4505,7 @@ export default function App() {
         : Array.from(
             new Set(
               Array.from({ length: currentLevelCount }, (_, k) =>
-                currentLevelCount <= 1
-                  ? 0
-                  : Math.round((k * (nz - 1)) / (currentLevelCount - 1))
+                currentLevelCount <= 1 ? 0 : Math.round((k * (nz - 1)) / (currentLevelCount - 1))
               )
             )
           );
@@ -3913,16 +4550,16 @@ export default function App() {
           }).catch(() => undefined);
         }
       }
-      if (showSeaIce && step <= overlayAhead) {
+      if (effectiveShowSeaIce && step <= overlayAhead) {
         seaIcePrefetch.add(tIndex);
       }
-      if (showWind && step <= overlayAhead) {
+      if (effectiveShowWind && step <= overlayAhead) {
         windPrefetch.add(tIndex);
       }
-      if (showEta && step <= overlayAhead) {
+      if (effectiveShowEta && step <= overlayAhead) {
         etaPrefetch.add(tIndex);
       }
-      if (showCurrents && step <= currentAhead) {
+      if (effectiveShowCurrents && step <= currentAhead) {
         currentDepthIndices.forEach((zIndex) => velocityPrefetch.push({ tIndex, zIndex }));
       }
     }
@@ -3949,10 +4586,10 @@ export default function App() {
     eddyDepthIdx,
     safeDepthIdx,
     safeTimeIdx,
-    showSeaIce,
-    showCurrents,
-    showEta,
-    showWind,
+    effectiveShowSeaIce,
+    effectiveShowCurrents,
+    effectiveShowEta,
+    effectiveShowWind,
     timeList.length,
     varId,
     viewMode,
@@ -4003,6 +4640,140 @@ export default function App() {
     [drawTransectArmed, latMax, latMin, lonMax, lonMin, viewMode]
   );
 
+  const handleParticleSeed = useCallback(
+    (pick: LonLatPoint) => {
+      const lon = clamp(Number(pick.lon), lonMin, lonMax);
+      const lat = clamp(Number(pick.lat), latMin, latMax);
+      if (!Number.isFinite(lon) || !Number.isFinite(lat)) return;
+      const selectedDepth = Number(meta?.z?.[safeDepthIdx] ?? -10);
+      const bottomDepth = Number(pick.bottomDepth);
+      const depth = resolveParticleSeedDepth(
+        selectedDepth,
+        Number.isFinite(bottomDepth) ? bottomDepth : undefined
+      );
+      if (depth == null) {
+        setParticleNotice("Seed ignored: clicked point is land or too shallow for tracking.");
+        return;
+      }
+      const wasAdjusted = Math.abs(depth - selectedDepth) > 1e-6;
+      setParticleSeeds((prev) => [
+        ...prev,
+        {
+          lon,
+          lat,
+          depth,
+          bottomDepth: Number.isFinite(bottomDepth) ? bottomDepth : undefined,
+        },
+      ]);
+      setParticleTrajectories(null);
+      setParticleHidden({});
+      setParticleStatus("idle");
+      setParticleError(null);
+      setParticleNotice(
+        wasAdjusted
+          ? `Seed placed at ${Math.round(depth)} m, just above local bottom.`
+          : `Seed placed at ${Math.round(depth)} m.`
+      );
+    },
+    [latMax, latMin, lonMax, lonMin, meta, safeDepthIdx]
+  );
+
+  // Route map clicks to particle seeding when armed, else to the draw tool.
+  const handleSurfacePick = useCallback(
+    (pick: LonLatPoint) => {
+      if (particlesArmed) {
+        handleParticleSeed(pick);
+        return;
+      }
+      handleDrawSurfacePick(pick);
+    },
+    [particlesArmed, handleParticleSeed, handleDrawSurfacePick]
+  );
+
+  const clearParticles = useCallback(() => {
+    setParticleSeeds([]);
+    setParticleTrajectories(null);
+    setParticleStatus("idle");
+    setParticleError(null);
+    setParticleNotice(null);
+    setParticleProgress(0);
+    setParticleScrub(1);
+    setParticlePlaying(false);
+    setParticleInfoIndex(0);
+    setParticleHidden({});
+    setParticleScalarSamples(null);
+    setParticleScalarStatus("idle");
+    setParticleScalarError(null);
+    setParticleInfoTempSamples(null);
+    setParticleInfoTempStatus("idle");
+  }, []);
+
+  const runParticles = useCallback(async () => {
+    if (!meta || !particleSeeds.length) return;
+    setParticleStatus("running");
+    setParticleError(null);
+    setParticleNotice(null);
+    setParticleProgress(0);
+    setParticleInfoIndex(0);
+    setParticleHidden({});
+    setParticleScalarSamples(null);
+    setParticleScalarStatus("idle");
+    setParticleScalarError(null);
+    setParticleInfoTempSamples(null);
+    setParticleInfoTempStatus("idle");
+    try {
+      const grid = {
+        lon: meta.lon,
+        lat: meta.lat,
+        z: meta.z,
+        zl: meta.zl,
+        ny: meta.lat.length,
+        nx: meta.lon.length,
+      };
+      const a = Date.parse(`${meta.timeIso[0]}T00:00:00Z`);
+      const b = Date.parse(`${meta.timeIso[1]}T00:00:00Z`);
+      const snapshotSeconds =
+        Number.isFinite(a) && Number.isFinite(b) && b > a ? (b - a) / 1000 : 5 * 86400;
+      const loadVolumes = async (t: number, k0: number, k1: number) => {
+        const [u, v, w] = await Promise.all([
+          loadVolumeLevels(meta.storeUrl, "U_cgrid", t, k0, k1),
+          loadVolumeLevels(meta.storeUrl, "V_cgrid", t, k0, k1),
+          loadVolumeLevels(meta.storeUrl, "W", t, k0, k1),
+        ]);
+        return { u: u.data, v: v.data, w: w.data };
+      };
+      const trajs = await integrateTrajectories({
+        grid,
+        seeds: particleSeeds,
+        tStart: safeTimeIdx,
+        nSnapshots: meta.timeIso.length,
+        snapshotSeconds,
+        runDays: particleRunDays,
+        direction: particleDirection,
+        loadVolumes,
+        bandMarginLevels: PARTICLE_BAND_MARGIN_LEVELS,
+        maxStepSeconds: PARTICLE_MAX_STEP_SECONDS,
+        onProgress: setParticleProgress,
+      });
+      const beached = trajs.filter((t) => t.beached).length;
+      setParticleTrajectories(trajs);
+      setParticleHidden({});
+      setParticleStatus("done");
+      setParticleScrub(1);
+      setParticlePlaying(false);
+      setParticlesArmed(false);
+      setParticleNotice(
+        beached
+          ? `${beached} of ${trajs.length} trajectories stopped at land, bottom, or data edge.`
+          : `${trajs.length} trajectories completed.`
+      );
+    } catch (e) {
+      console.error(e);
+      setParticleStatus("failed");
+      setParticleError(e instanceof Error ? e.message : String(e));
+    }
+  }, [meta, particleSeeds, safeTimeIdx, particleRunDays, particleDirection]);
+
   const drawGuidePath = useMemo(() => {
     if (viewMode !== "draw") return undefined;
     const points: LonLatPoint[] =
@@ -4033,7 +4804,8 @@ export default function App() {
     };
   }, [drawCameraFocusNonce, drawnTransectPath, viewMode]);
 
-  const scalarFieldVisible = viewMode === "class" || viewMode === "isosurface" || overlayOpacity > 0.001;
+  const scalarFieldVisible =
+    viewMode === "class" || viewMode === "isosurface" || overlayOpacity > 0.001;
   const showHorizontalColorbar =
     showColorbarActive &&
     scalarFieldVisible &&
@@ -4045,7 +4817,9 @@ export default function App() {
     if (!scalarFieldVisible) return undefined;
     if (drawTransectComplete) return undefined;
     const dataColorbarTitle = variableColorbarTitle(varId);
-    const dataColorbarTickText = colorbarTicks ? formatColorbarTickText(colorbarTicks, dataColorbarTitle) : undefined;
+    const dataColorbarTickText = colorbarTicks
+      ? formatColorbarTickText(colorbarTicks, dataColorbarTitle)
+      : undefined;
     return {
       enabled: true,
       values: horizontalRender.values,
@@ -4092,8 +4866,10 @@ export default function App() {
     if (!meta || !projectOn3d || !transectRender) return undefined;
     if (viewMode !== "transect" && viewMode !== "draw") return undefined;
     if (!scalarFieldVisible) return undefined;
-    const cmin = drawAutoColorRangeActive && drawTransectAutoRange ? drawTransectAutoRange.min : settings.cmin;
-    const cmax = drawAutoColorRangeActive && drawTransectAutoRange ? drawTransectAutoRange.max : settings.cmax;
+    const cmin =
+      drawAutoColorRangeActive && drawTransectAutoRange ? drawTransectAutoRange.min : settings.cmin;
+    const cmax =
+      drawAutoColorRangeActive && drawTransectAutoRange ? drawTransectAutoRange.max : settings.cmax;
     const transectColorbarTicks =
       drawAutoColorRangeActive && drawTransectAutoRange && settings.tickCount > 0
         ? makeTicks(drawTransectAutoRange.min, drawTransectAutoRange.max, settings.tickCount)
@@ -4143,7 +4919,7 @@ export default function App() {
   ]);
 
   const seaIcePlane = useMemo(() => {
-    if (!meta || !projectOn3d || !showSeaIce || !seaIceRender) return null;
+    if (!meta || !projectOn3d || !effectiveShowSeaIce || !seaIceRender) return null;
     const masked = seaIceRender.values.map((row) =>
       row.map((v) => {
         const x = Number(v);
@@ -4180,12 +4956,12 @@ export default function App() {
     seaIceColorbarLayout.len,
     seaIceColorbarLayout.x,
     seaIceColorbarLayout.y,
-    showSeaIce,
+    effectiveShowSeaIce,
     showColorbarActive,
   ]);
 
   const etaPlane = useMemo(() => {
-    if (!meta || !projectOn3d || !showEta || !etaRender) return null;
+    if (!meta || !projectOn3d || !effectiveShowEta || !etaRender) return null;
     const masked = etaRender.values.map((row) =>
       row.map((v) => {
         const x = Number(v);
@@ -4229,7 +5005,7 @@ export default function App() {
   }, [
     meta,
     projectOn3d,
-    showEta,
+    effectiveShowEta,
     etaRender,
     etaColorbarLayout.len,
     etaColorbarLayout.x,
@@ -4244,12 +5020,7 @@ export default function App() {
     if (seaIcePlane) planes.push(seaIcePlane);
     if (etaPlane) planes.push(etaPlane as Plane);
     return planes.length ? planes : undefined;
-  }, [
-    meta,
-    projectOn3d,
-    seaIcePlane,
-    etaPlane,
-  ]);
+  }, [meta, projectOn3d, seaIcePlane, etaPlane]);
 
   const windParticleCount = useMemo(() => {
     const area = Math.max(1, viewportWidth * viewportHeight);
@@ -4260,7 +5031,7 @@ export default function App() {
   }, [playing, viewportHeight, viewportWidth]);
 
   const windLayer = useMemo(() => {
-    if (!meta || !projectOn3d || !showWind || !windRender) return undefined;
+    if (!meta || !projectOn3d || !effectiveShowWind || !windRender) return undefined;
     return {
       enabled: true,
       lon: windRender.lon,
@@ -4273,12 +5044,13 @@ export default function App() {
       color: "rgba(255,255,255,0.90)",
       size: playing ? 1.1 : 1.35,
     };
-  }, [meta, projectOn3d, showWind, windParticleCount, windRender, playing]);
+  }, [effectiveShowWind, meta, projectOn3d, windParticleCount, windRender, playing]);
 
   // Multi-depth ocean currents: one animated flow layer per sampled depth,
   // placed at its true depth (z in metres) and colored by depth (surface->deep).
   const currentLayers = useMemo(() => {
-    if (!meta || !projectOn3d || !showCurrents || !columnVelocity?.length) return undefined;
+    if (!meta || !projectOn3d || !effectiveShowCurrents || !columnVelocity?.length)
+      return undefined;
     const nz = meta.z.length;
     const palette = plasma_256();
     const isSelected = currentsDepthMode === "selected";
@@ -4337,7 +5109,7 @@ export default function App() {
   }, [
     meta,
     projectOn3d,
-    showCurrents,
+    effectiveShowCurrents,
     columnVelocity,
     spatialMask,
     windParticleCount,
@@ -4355,7 +5127,7 @@ export default function App() {
     if (
       !meta ||
       !projectOn3d ||
-      !showCurrents ||
+      !effectiveShowCurrents ||
       currentsDepthMode !== "column" ||
       !columnVelocity?.length
     )
@@ -4381,8 +5153,267 @@ export default function App() {
     currentsDepthMode,
     meta,
     projectOn3d,
-    showCurrents,
+    effectiveShowCurrents,
   ]);
+
+  const particleTrajectoryColoring = useMemo(() => {
+    const trajectories = particleTrajectories ?? [];
+    if (!trajectories.length) return null;
+
+    const makeColorbar = (
+      mode: ParticleColorMode,
+      values: number[][],
+      colorscale: Array<[number, string]>,
+      forceMin?: number,
+      forceMax?: number,
+      opts?: { ticks?: number[]; tickText?: string[]; len?: number }
+    ) => {
+      const range = finiteNestedRange(values);
+      const cmin = Number.isFinite(forceMin) ? Number(forceMin) : (range?.min ?? 0);
+      const cmaxRaw = Number.isFinite(forceMax) ? Number(forceMax) : (range?.max ?? 1);
+      const cmax = cmaxRaw > cmin ? cmaxRaw : cmin + 1;
+      const ticks = opts?.ticks ?? makeTicks(cmin, cmax, 5) ?? [cmin, cmax];
+      const title = particleColorbarTitle(mode);
+      return {
+        title,
+        colorscale,
+        cmin,
+        cmax,
+        ticks,
+        tickText: opts?.tickText ?? formatColorbarTickText(ticks, title),
+        len: opts?.len,
+      };
+    };
+
+    if (particleColorMode === "index") {
+      const values = trajectories.map((trajectory, idx) => trajectory.points.map(() => idx + 1));
+      const count = trajectories.length;
+      const ticks =
+        count <= 8
+          ? Array.from({ length: count }, (_, idx) => idx + 1)
+          : Array.from(
+              new Set([
+                1,
+                Math.ceil(count * 0.25),
+                Math.ceil(count * 0.5),
+                Math.ceil(count * 0.75),
+                count,
+              ])
+            );
+      return {
+        values,
+        colorbar: makeColorbar(
+          "index",
+          values,
+          particleIndexColorscale(count),
+          1,
+          Math.max(1, count),
+          {
+            ticks,
+            tickText: ticks.map((tick) => String(tick)),
+            len: 0.42,
+          }
+        ),
+      };
+    }
+
+    if (particleColorMode === "depth") {
+      const values = trajectories.map((trajectory) =>
+        trajectory.points.map((point) => Math.abs(Number(point.depth)))
+      );
+      const range = finiteNestedRange(values);
+      const referenceDepth = Math.abs(Number(zList[safeDepthIdx] ?? 10));
+      const maxDepth = Math.max(10, Math.ceil((range?.max ?? referenceDepth) / 50) * 50);
+      const ticks = makeTicks(0, maxDepth, 5) ?? [0, maxDepth];
+      return {
+        values,
+        colorbar: makeColorbar(
+          "depth",
+          values,
+          paletteToColorscale(plasma_256().slice().reverse()),
+          0,
+          maxDepth,
+          {
+            ticks,
+            tickText: ticks.map((tick) => `${Math.round(tick)}`),
+            len: 0.52,
+          }
+        ),
+      };
+    }
+
+    if (particleColorMode === "age") {
+      const stepDays = PARTICLE_MAX_STEP_SECONDS / 86400;
+      const values = trajectories.map((trajectory) =>
+        trajectory.points.map((_, idx) => Math.min(particleRunDays, idx * stepDays))
+      );
+      const maxAge = Math.max(PARTICLE_RUN_DAYS_STEP, particleRunDays);
+      const ticks = makeTicks(0, maxAge, 5) ?? [0, maxAge];
+      return {
+        values,
+        colorbar: makeColorbar("age", values, paletteToColorscale(viridis_256()), 0, maxAge, {
+          ticks,
+          tickText: ticks.map((tick) => `${Math.round(tick)}`),
+          len: 0.52,
+        }),
+      };
+    }
+
+    if (particleColorMode === "speed") {
+      const values = trajectories.map((trajectory) => trajectorySpeedValues(trajectory.points));
+      const range = finiteNestedRange(values);
+      const maxSpeed = Math.max(range?.max ?? 1, 1);
+      const paddedMax = Math.ceil(maxSpeed / 2) * 2;
+      const ticks = makeTicks(0, paddedMax, 5) ?? [0, paddedMax];
+      return {
+        values,
+        colorbar: makeColorbar(
+          "speed",
+          values,
+          paletteToColorscale(cmocean_256("tempo")),
+          0,
+          paddedMax,
+          {
+            ticks,
+            tickText: ticks.map((tick) => `${Number(tick).toFixed(Number(tick) < 10 ? 1 : 0)}`),
+            len: 0.52,
+          }
+        ),
+      };
+    }
+
+    const scalarReady =
+      particleScalarSamples?.mode === particleColorMode &&
+      particleScalarSamples.timeIdx === safeTimeIdx &&
+      particleScalarSamples.trajectoryKey === particleTrajectoryKey;
+    if (!scalarReady) return null;
+    const values = particleScalarSamples.values;
+    return {
+      values,
+      colorbar: makeColorbar(
+        particleColorMode,
+        values,
+        paletteToColorscale(paletteForColormapId(fieldColormapByVar[particleColorMode])),
+        undefined,
+        undefined,
+        { len: 0.52 }
+      ),
+    };
+  }, [
+    fieldColormapByVar,
+    particleColorMode,
+    particleRunDays,
+    particleScalarSamples,
+    particleTrajectories,
+    particleTrajectoryKey,
+    safeDepthIdx,
+    safeTimeIdx,
+    zList,
+  ]);
+
+  const particlePlaybackInfo = useMemo(() => {
+    if (viewMode !== "particles" || !particleTrajectories?.length) return null;
+    const selectedIndex = clamp(
+      Math.round(particleInfoIndex),
+      0,
+      Math.max(0, particleTrajectories.length - 1)
+    );
+    const selected = particleTrajectories[selectedIndex];
+    if (!selected?.points.length) return null;
+    const progress = clamp(particleScrub, 0, 1);
+    const current = pointAtTrajectoryProgress(selected.points, progress);
+    const start = selected.points[0] ?? null;
+    const end = selected.points[selected.points.length - 1] ?? null;
+    const maxSteps = Math.max(0, selected.points.length - 1);
+    const elapsedDays = Math.min(
+      particleRunDays,
+      progress * maxSteps * (PARTICLE_MAX_STEP_SECONDS / 86400)
+    );
+    const date = addDaysToIsoDate(activeTimeLabel, particleDirection * elapsedDays);
+    const tempReady =
+      particleInfoTempSamples?.timeIdx === safeTimeIdx &&
+      particleInfoTempSamples.trajectoryKey === particleTrajectoryKey;
+    const selectedTemp = tempReady ? (particleInfoTempSamples.values[selectedIndex] ?? null) : null;
+    const tempCurrent = selectedTemp ? valueAtTrajectoryProgress(selectedTemp, progress) : null;
+    const tempStart = selectedTemp ? valueAtTrajectoryProgress(selectedTemp, 0) : null;
+    const tempEnd = selectedTemp ? valueAtTrajectoryProgress(selectedTemp, 1) : null;
+    const formatTemp = (value: number | null) =>
+      Number.isFinite(Number(value))
+        ? `${formatColorbarTick(Number(value), "temperature")} °C`
+        : particleInfoTempStatus === "loading"
+          ? "loading"
+          : "n/a";
+    return {
+      count: particleTrajectories.length,
+      selectedIndex,
+      page: selectedIndex + 1,
+      visible: !particleHidden[selectedIndex],
+      hasPrev: selectedIndex > 0,
+      hasNext: selectedIndex < particleTrajectories.length - 1,
+      progress,
+      elapsedDays,
+      date,
+      current,
+      start,
+      end,
+      currentDepth: current?.depth ?? null,
+      tempCurrent,
+      tempStart,
+      tempEnd,
+      formatTemp,
+      stopped: selected.beached,
+    };
+  }, [
+    activeTimeLabel,
+    particleDirection,
+    particleHidden,
+    particleInfoIndex,
+    particleInfoTempSamples,
+    particleInfoTempStatus,
+    particleRunDays,
+    particleScrub,
+    particleTrajectories,
+    particleTrajectoryKey,
+    safeTimeIdx,
+    viewMode,
+  ]);
+
+  const trajectoryLayer = useMemo(() => {
+    if (!meta || !projectOn3d) return undefined;
+    if (!particleSeeds.length && !particleTrajectories?.length) return undefined;
+    return {
+      enabled: true,
+      colorMode: particleColorMode,
+      colorbar: particleTrajectoryColoring?.colorbar,
+      seeds: particleSeeds.map((s, idx) => ({
+        lon: s.lon,
+        lat: s.lat,
+        depth: s.depth,
+        label: String(idx + 1),
+      })),
+      trajectories: (particleTrajectories ?? []).map((t, idx) => ({
+        lon: t.points.map((p) => p.lon),
+        lat: t.points.map((p) => p.lat),
+        depth: t.points.map((p) => p.depth),
+        colorValue: particleTrajectoryColoring?.values?.[idx],
+        beached: t.beached,
+        visible: !particleHidden[idx],
+      })),
+    };
+  }, [
+    meta,
+    particleColorMode,
+    particleHidden,
+    particleSeeds,
+    particleTrajectories,
+    particleTrajectoryColoring,
+    projectOn3d,
+  ]);
+
+  const trajectoryAnim = useMemo(
+    () => ({ progress: particleScrub, playing: false }),
+    [particleScrub]
+  );
 
   const classLayer = useMemo(() => {
     if (!meta || !projectOn3d || viewMode !== "class" || !classTraces?.length) return undefined;
@@ -4426,7 +5457,13 @@ export default function App() {
     viewMode,
   ]);
   const isoVolumeClassLayer = useMemo(() => {
-    if (!meta || !projectOn3d || viewMode !== "isosurface" || isoRenderMode !== "volumeSplit" || !isoVolumeClasses) {
+    if (
+      !meta ||
+      !projectOn3d ||
+      viewMode !== "isosurface" ||
+      isoRenderMode !== "volumeSplit" ||
+      !isoVolumeClasses
+    ) {
       return undefined;
     }
     if (!isoVolumeClasses.traces.length) return undefined;
@@ -4434,7 +5471,8 @@ export default function App() {
       enabled: true,
       varLabel: isoVolumeClasses.colorbarTitle,
       points: isoVolumeClasses.traces,
-      markerSize: isoSurfaceSettings.volumeStyle === "cloud" ? (playing ? 4.2 : 5.2) : playing ? 2.6 : 3.3,
+      markerSize:
+        isoSurfaceSettings.volumeStyle === "cloud" ? (playing ? 4.2 : 5.2) : playing ? 2.6 : 3.3,
       opacity: Math.max(0.22, Math.min(0.95, isoSurfaceSettings.opacity)),
       renderStyle: isoSurfaceSettings.volumeStyle === "fill" ? "voxels" : "points",
       showLegend: true,
@@ -4464,7 +5502,13 @@ export default function App() {
     viewMode,
   ]);
   const isoVolumeBodiesLayer = useMemo(() => {
-    if (!meta || !projectOn3d || viewMode !== "isosurface" || isoRenderMode !== "volumeSplit" || !isoSurfaceVolume) {
+    if (
+      !meta ||
+      !projectOn3d ||
+      viewMode !== "isosurface" ||
+      isoRenderMode !== "volumeSplit" ||
+      !isoSurfaceVolume
+    ) {
       return undefined;
     }
     if (isoSurfaceSettings.volumeStyle !== "fill") return undefined;
@@ -4478,7 +5522,15 @@ export default function App() {
       deepColor: colors.deep,
       opacity: Math.max(0.05, Math.min(0.14, isoSurfaceSettings.opacity * 0.18)),
     };
-  }, [isoRenderMode, isoSurfaceSettings.opacity, isoSurfaceSettings.volumeStyle, isoSurfaceVolume, meta, projectOn3d, viewMode]);
+  }, [
+    isoRenderMode,
+    isoSurfaceSettings.opacity,
+    isoSurfaceSettings.volumeStyle,
+    isoSurfaceVolume,
+    meta,
+    projectOn3d,
+    viewMode,
+  ]);
   const pointCloudLegendLayer = viewMode === "class" ? classLayer : isoVolumeClassLayer;
   const pointCloudLayerPlotly = viewMode === "class" ? classLayer : isoVolumeClassLayer;
   const pointCloudLayerThree =
@@ -4491,7 +5543,12 @@ export default function App() {
     if (!meta || !projectOn3d || viewMode !== "isosurface" || !isoSurfaceVolume) {
       return undefined;
     }
-    if (!isoSurfaceVolume.lon.length || !isoSurfaceVolume.lat.length || !isoSurfaceVolume.depth.length) return undefined;
+    if (
+      !isoSurfaceVolume.lon.length ||
+      !isoSurfaceVolume.lat.length ||
+      !isoSurfaceVolume.depth.length
+    )
+      return undefined;
     const depthRange = computeMinMax(isoSurfaceVolume.depth);
     if (!depthRange) return undefined;
     if (isoRenderMode === "volumeSplit") {
@@ -4509,7 +5566,9 @@ export default function App() {
         showScale: showColorbarActive,
         colorbarTitle: "Interface depth (m)",
         colorbarTicks: interfaceTicks,
-        colorbarTickText: interfaceTicks ? formatColorbarTickText(interfaceTicks, "Interface depth (m)") : undefined,
+        colorbarTickText: interfaceTicks
+          ? formatColorbarTickText(interfaceTicks, "Interface depth (m)")
+          : undefined,
         colorbarLen: secondaryColorbarLayout.len,
         colorbarX: secondaryColorbarLayout.x,
         colorbarY: secondaryColorbarLayout.y,
@@ -4565,12 +5624,11 @@ export default function App() {
   const showBathyColorbarThree = showColorbarActive && showBathy;
   const bathyColorbarTitle = "Topography";
   const bathyColorbarSubtitle =
-    bathySource === "rtopo"
-      ? "30 arcseconds RTopo-2.0.4 bed elevation (m)"
-      : "MITgcm model grid";
+    bathySource === "rtopo" ? "30 arcseconds RTopo-2.0.4 bed elevation (m)" : "MITgcm model grid";
 
   const eddyLayer = useMemo(() => {
-    if (!meta || !projectOn3d || viewMode !== "eddies" || !eddyDetection || !eddyVolume) return undefined;
+    if (!meta || !projectOn3d || viewMode !== "eddies" || !eddyDetection || !eddyVolume)
+      return undefined;
     const detectionPlaneZ = Number(meta.z[eddyDepthIdx] ?? EDDY_DETECTION_DEPTH_M);
     const trackZ = detectionPlaneZ + EDDY_TRACK_OFFSET_M;
     const digits = varId === "T" ? 2 : 3;
@@ -4589,17 +5647,19 @@ export default function App() {
         `Radius: ${cluster.radiusKm.toFixed(0)} km<br>` +
         `3D depth range: ${Math.round(volume.maxDepth)} to ${Math.round(volume.minDepth)} m<br>` +
         `3D points: ${volume.pointCount}`;
-      return [{
-        id: cluster.id,
-        kind: cluster.kind,
-        x: volume.x,
-        y: volume.y,
-        z: volume.z.map((zValue) => zValue + EDDY_LAYER_OFFSET_M),
-        trackX: cluster.trackX ?? [],
-        trackY: cluster.trackY ?? [],
-        trackZ: (cluster.trackX ?? []).map(() => trackZ),
-        hoverText,
-      }];
+      return [
+        {
+          id: cluster.id,
+          kind: cluster.kind,
+          x: volume.x,
+          y: volume.y,
+          z: volume.z.map((zValue) => zValue + EDDY_LAYER_OFFSET_M),
+          trackX: cluster.trackX ?? [],
+          trackY: cluster.trackY ?? [],
+          trackZ: (cluster.trackX ?? []).map(() => trackZ),
+          hoverText,
+        },
+      ];
     });
     return {
       enabled: true,
@@ -4677,9 +5737,12 @@ export default function App() {
       const isNorth = corner === "nw" || corner === "ne";
 
       const onMove = (ev: PointerEvent) => {
-        const rawWidth = startWidth + (corner === "ne" || corner === "se" ? ev.clientX - startX : startX - ev.clientX);
+        const rawWidth =
+          startWidth +
+          (corner === "ne" || corner === "se" ? ev.clientX - startX : startX - ev.clientX);
         const rawHeight =
-          startHeight + (corner === "sw" || corner === "se" ? ev.clientY - startY : startY - ev.clientY);
+          startHeight +
+          (corner === "sw" || corner === "se" ? ev.clientY - startY : startY - ev.clientY);
         const nextSize = clampPanelSize(
           { width: rawWidth, height: rawHeight },
           viewportWidth,
@@ -4714,10 +5777,9 @@ export default function App() {
     if (viewMode === "draw") setDrawAutoColorRangeEnabled(false);
     if (viewMode === "isosurface") {
       if (isoRenderMode === "volumeSplit") return;
-      const mm =
-        isoSurfaceVolume?.value?.length
-          ? computeMinMax(isoSurfaceVolume.value, { ignoreExactZero: isZeroMaskedVar(varId) })
-          : null;
+      const mm = isoSurfaceVolume?.value?.length
+        ? computeMinMax(isoSurfaceVolume.value, { ignoreExactZero: isZeroMaskedVar(varId) })
+        : null;
       if (!mm) return;
       setColorSettings((prev) => ({
         ...prev,
@@ -4730,7 +5792,10 @@ export default function App() {
       return;
     }
     const values =
-      viewMode === "horizontal" || viewMode === "class" || (viewMode === "draw" && !transectValuesMasked)
+      viewMode === "horizontal" ||
+      viewMode === "particles" ||
+      viewMode === "class" ||
+      (viewMode === "draw" && !transectValuesMasked)
         ? horizontalValuesMasked
         : transectValuesMasked;
     if (!values) return;
@@ -4766,7 +5831,13 @@ export default function App() {
   ]);
 
   const effectiveRenderer3d: Renderer3D =
-    viewMode === "horizontal" ? horizontalRenderer : viewMode === "isosurface" ? isosurfaceRenderer : "plotly";
+    viewMode === "particles"
+      ? "three"
+      : viewMode === "horizontal"
+        ? horizontalRenderer
+        : viewMode === "isosurface"
+          ? isosurfaceRenderer
+          : "plotly";
   const activeSceneThemeMode: "day" | "night" = themeMode;
   const activeBathyOpacity =
     viewMode === "isosurface"
@@ -4810,9 +5881,11 @@ export default function App() {
           windLayer={windLayer}
           currentLayers={currentLayers}
           currentsColorbar={currentsColorbar}
+          trajectoryLayer={trajectoryLayer}
+          trajectoryAnim={trajectoryAnim}
           guidePath={drawGuidePath}
-          drawingMode={viewMode === "draw" && drawTransectArmed}
-          onSurfacePick={handleDrawSurfacePick}
+          drawingMode={(viewMode === "draw" && drawTransectArmed) || particlesArmed}
+          onSurfacePick={handleSurfacePick}
           onSurfaceHover={handleDrawSurfaceHover}
           viewerHint={currentModeSummary}
         />
@@ -4856,16 +5929,16 @@ export default function App() {
                       ? HORIZONTAL_PLOTLY_OVERVIEW_CAMERA
                       : viewMode === "draw"
                         ? DRAW_OVERVIEW_CAMERA
-                      : viewMode === "transect"
-                        ? ZONAL_OVERVIEW_CAMERA
-                        : viewMode === "isosurface"
-                          ? ISOSURFACE_OVERVIEW_CAMERA
-                        : PLOTLY_OVERVIEW_CAMERA,
+                        : viewMode === "transect"
+                          ? ZONAL_OVERVIEW_CAMERA
+                          : viewMode === "isosurface"
+                            ? ISOSURFACE_OVERVIEW_CAMERA
+                            : PLOTLY_OVERVIEW_CAMERA,
                 }
               : undefined
           }
-          drawingMode={viewMode === "draw" && drawTransectArmed}
-          onSurfacePick={handleDrawSurfacePick}
+          drawingMode={(viewMode === "draw" && drawTransectArmed) || particlesArmed}
+          onSurfacePick={handleSurfacePick}
           onSurfaceHover={handleDrawSurfaceHover}
           viewerHint={currentModeSummary}
         />
@@ -4882,27 +5955,13 @@ export default function App() {
             ☰
           </button>
         ) : (
-          <div
-            ref={panelRef}
-            className="panel controlPanel iosSettingsPanel"
-            style={{
-              left: panelPos?.left ?? (isMobileViewport ? 12 : 16),
-              width: panelBoxSize.width,
-              height: panelDisplayHeight,
-              ...(isFullscreen && !isMobileViewport
-                ? { top: 16 }
-                : panelPos
-                ? { top: panelPos.top }
-                : isMobileViewport
-                  ? { top: 12 }
-                  : { bottom: 16 }),
-            }}
-          >
+          <div ref={panelRef} className="panel controlPanel iosSettingsPanel" style={panelStyle}>
             <div
               className="panelHeader"
               title="Drag to move (double-click to reset)"
               onDoubleClick={() => setPanelPos(null)}
               onPointerDown={(e) => {
+                if (isMobileViewport) return;
                 if ((e.target as HTMLElement | null)?.closest?.("button")) return;
                 e.preventDefault();
                 const el = panelRef.current;
@@ -5016,10 +6075,12 @@ export default function App() {
                 <summary>View</summary>
                 <div className="sectionBody">
                   <div className="sectionSubheadRow">
-                    <span className="sectionGlyph sectionGlyphMode" aria-hidden>◫</span>
+                    <span className="sectionGlyph sectionGlyphMode" aria-hidden>
+                      ◫
+                    </span>
                     <div className="sectionSubhead">View mode</div>
                   </div>
-                  <div className="tabs tabs5">
+                  <div className="tabs tabs6">
                     <button
                       className={`tab ${viewMode === "horizontal" ? "tabActive" : ""}`}
                       onClick={() => setViewMode("horizontal")}
@@ -5075,6 +6136,17 @@ export default function App() {
                     >
                       Iso
                     </button>
+                    <button
+                      className={`tab ${viewMode === "particles" ? "tabActive" : ""}`}
+                      onClick={() => setViewMode("particles")}
+                      onMouseEnter={() => setViewModeHover("particles")}
+                      onMouseLeave={() => setViewModeHover(null)}
+                      onFocus={() => setViewModeHover("particles")}
+                      onBlur={() => setViewModeHover(null)}
+                      title={VIEW_MODE_DESCRIPTIONS.particles}
+                    >
+                      Particles
+                    </button>
                   </div>
                   {viewMode === "draw" ? (
                     <div ref={(node) => assignTutorialTarget("draw", node)}>
@@ -5109,12 +6181,14 @@ export default function App() {
                       <div className="hint">{drawTransectHint}</div>
                       {drawTransectPoints[0] ? (
                         <div className="hint">
-                          Start: {drawTransectPoints[0].lon.toFixed(2)}°, {drawTransectPoints[0].lat.toFixed(2)}°N
+                          Start: {drawTransectPoints[0].lon.toFixed(2)}°,{" "}
+                          {drawTransectPoints[0].lat.toFixed(2)}°N
                         </div>
                       ) : null}
                       {drawTransectPoints[1] ? (
                         <div className="hint">
-                          End: {drawTransectPoints[1].lon.toFixed(2)}°, {drawTransectPoints[1].lat.toFixed(2)}°N
+                          End: {drawTransectPoints[1].lon.toFixed(2)}°,{" "}
+                          {drawTransectPoints[1].lat.toFixed(2)}°N
                         </div>
                       ) : null}
                     </div>
@@ -5153,6 +6227,14 @@ export default function App() {
                         </div>
                       </label>
                     </>
+                  ) : viewMode === "particles" ? (
+                    <label>
+                      Viewer
+                      <div className="hint">
+                        Particle paths render in the Three viewer only; Plotly is not used for
+                        tracking mode.
+                      </div>
+                    </label>
                   ) : null}
                   {viewMode === "isosurface" ? (
                     <div ref={(node) => assignTutorialTarget("isosurface", node)}>
@@ -5253,12 +6335,15 @@ export default function App() {
                             </button>
                           </div>
                           <div className="hint">
-                            Filled volume uses brighter terrain plus an interface sheet in Three. Plotly keeps the cloud fallback.
+                            Filled volume uses brighter terrain plus an interface sheet in Three.
+                            Plotly keeps the cloud fallback.
                           </div>
                         </label>
                       ) : null}
                       <label>
-                        {isoRenderMode === "volumeSplit" ? `Split value (${isoValueLabel})` : `Target isovalue (${isoValueLabel})`}
+                        {isoRenderMode === "volumeSplit"
+                          ? `Split value (${isoValueLabel})`
+                          : `Target isovalue (${isoValueLabel})`}
                         <RangeNudgeSlider
                           min={range.min}
                           max={range.max}
@@ -5279,7 +6364,9 @@ export default function App() {
                           type="text"
                           inputMode="decimal"
                           value={isoSurfaceInputs?.value ?? String(isoSurfaceSettings.value)}
-                          onInput={(e) => updateIsoSurfaceInputLive((e.target as HTMLInputElement).value)}
+                          onInput={(e) =>
+                            updateIsoSurfaceInputLive((e.target as HTMLInputElement).value)
+                          }
                           onBlur={commitIsoSurfaceInput}
                           onKeyDown={(e) => {
                             if (e.key === "Enter") commitIsoSurfaceInput();
@@ -5314,7 +6401,8 @@ export default function App() {
                       </label>
                       {isoRenderMode === "volumeSplit" ? (
                         <label>
-                          Volume density ({clampClassDensity(isoSurfaceSettings.volumeDensity).toFixed(2)}x)
+                          Volume density (
+                          {clampClassDensity(isoSurfaceSettings.volumeDensity).toFixed(2)}x)
                           <RangeNudgeSlider
                             min={CLASS_DENSITY_MIN}
                             max={CLASS_DENSITY_MAX}
@@ -5327,7 +6415,9 @@ export default function App() {
                               }))
                             }
                           />
-                          <div className="hint">Lower is faster/sparser; higher is denser/slower.</div>
+                          <div className="hint">
+                            Lower is faster/sparser; higher is denser/slower.
+                          </div>
                         </label>
                       ) : null}
                       <button
@@ -5349,17 +6439,29 @@ export default function App() {
                     </div>
                   ) : null}
                   <div className="hint">{viewModeDescription}</div>
+                  {viewMode === "particles" ? (
+                    <div className="hint" style={{ marginTop: 4, opacity: 0.85 }}>
+                      Method: RK4 through the time-varying U/V/W field; wet-neighbor weighted
+                      spatial interpolation, linear time interpolation between 5-day snapshots, and
+                      one-day max substeps. Paths are illustrative, not research-grade.
+                    </div>
+                  ) : null}
                   {showPlotlyPerformanceHint ? (
                     <div className="hint">Plotly rendering may be slow in this mode.</div>
                   ) : null}
 
                   <div className="sectionSubheadRow">
-                    <span className="sectionGlyph sectionGlyphTopo" aria-hidden>⌂</span>
+                    <span className="sectionGlyph sectionGlyphTopo" aria-hidden>
+                      ⌂
+                    </span>
                     <div className="sectionSubhead">Topography</div>
                   </div>
                   <label>
                     Topography source
-                    <select value={bathySource} onChange={(e) => setBathySource(e.target.value as BathySourceId)}>
+                    <select
+                      value={bathySource}
+                      onChange={(e) => setBathySource(e.target.value as BathySourceId)}
+                    >
                       {BATHY_SOURCE_OPTIONS.map((opt) => (
                         <option key={opt.id} value={opt.id}>
                           {opt.label}
@@ -5412,7 +6514,9 @@ export default function App() {
 
                   <div ref={(node) => assignTutorialTarget("variables", node)}>
                     <div className="sectionSubheadRow">
-                      <span className="sectionGlyph sectionGlyphVars" aria-hidden>∑</span>
+                      <span className="sectionGlyph sectionGlyphVars" aria-hidden>
+                        ∑
+                      </span>
                       <div className="sectionSubhead">Variables</div>
                     </div>
                     <div className="toggleGrid2">
@@ -5423,7 +6527,11 @@ export default function App() {
                           onCheckedChange={(checked) => {
                             if (checked) {
                               activateScalarVariable("T");
-                            } else if (varId === "T" && viewMode !== "class" && viewMode !== "isosurface") {
+                            } else if (
+                              varId === "T" &&
+                              viewMode !== "class" &&
+                              viewMode !== "isosurface"
+                            ) {
                               setOverlayOpacity(0);
                             }
                           }}
@@ -5437,7 +6545,11 @@ export default function App() {
                           onCheckedChange={(checked) => {
                             if (checked) {
                               activateScalarVariable("S");
-                            } else if (varId === "S" && viewMode !== "class" && viewMode !== "isosurface") {
+                            } else if (
+                              varId === "S" &&
+                              viewMode !== "class" &&
+                              viewMode !== "isosurface"
+                            ) {
                               setOverlayOpacity(0);
                             }
                           }}
@@ -5451,7 +6563,11 @@ export default function App() {
                           onCheckedChange={(checked) => {
                             if (checked) {
                               activateScalarVariable("rho");
-                            } else if (varId === "rho" && viewMode !== "class" && viewMode !== "isosurface") {
+                            } else if (
+                              varId === "rho" &&
+                              viewMode !== "class" &&
+                              viewMode !== "isosurface"
+                            ) {
                               setOverlayOpacity(0);
                             }
                           }}
@@ -5562,7 +6678,9 @@ export default function App() {
                             step="0.05"
                             min="0"
                             value={String(currentsMin)}
-                            onChange={(e) => setCurrentsMin(Math.max(0, Number(e.target.value) || 0))}
+                            onChange={(e) =>
+                              setCurrentsMin(Math.max(0, Number(e.target.value) || 0))
+                            }
                           />
                         </label>
                         <label>
@@ -5572,15 +6690,186 @@ export default function App() {
                             step="0.05"
                             min="0"
                             value={String(currentsMax)}
-                            onChange={(e) => setCurrentsMax(Math.max(0, Number(e.target.value) || 0))}
+                            onChange={(e) =>
+                              setCurrentsMax(Math.max(0, Number(e.target.value) || 0))
+                            }
                           />
                         </label>
                         <div className="sectionSubhead">
                           {currentsDepthMode === "selected"
                             ? "Currents at the selected depth. Animated in Three; native 3D vectors in Plotly."
-                            : "Full water column, colored by depth. Animated in Three; native 3D vectors in Plotly."}
-                          {" "}Zooming in automatically increases current density in both renderers.
+                            : "Full water column, colored by depth. Animated in Three; native 3D vectors in Plotly."}{" "}
+                          Zooming in automatically increases current density in both renderers.
                         </div>
+                      </div>
+                    )}
+                    {viewMode === "particles" && (
+                      <div
+                        className="section"
+                        style={{ marginTop: 10 }}
+                        ref={(node) => assignTutorialTarget("particles", node)}
+                      >
+                        <div className="sectionSubhead">Particle tracking (3D Lagrangian)</div>
+                        <div className="toggleRow">
+                          <div>Click to seed</div>
+                          <ToggleSwitch
+                            checked={particlesArmed}
+                            onCheckedChange={setParticlesArmed}
+                          />
+                        </div>
+                        <div className="sectionSubhead">
+                          {particlesArmed
+                            ? "Click wet map points to drop particles at the selected depth."
+                            : "Set depth under Tempo-spatial, arm this switch, then click wet map points."}
+                          {` Seeds: ${particleSeeds.length}. Active seed depth: ${Math.round(Number(meta?.z?.[safeDepthIdx] ?? -10))} m.`}
+                        </div>
+                        <label>
+                          Run length (days, 5-day steps)
+                          <input
+                            type="number"
+                            min={String(PARTICLE_RUN_DAYS_STEP)}
+                            step={String(PARTICLE_RUN_DAYS_STEP)}
+                            value={String(particleRunDays)}
+                            onChange={(e) => {
+                              const raw = Number(e.target.value);
+                              const rounded =
+                                Math.round(
+                                  (Number.isFinite(raw) ? raw : PARTICLE_RUN_DAYS_STEP) /
+                                    PARTICLE_RUN_DAYS_STEP
+                                ) * PARTICLE_RUN_DAYS_STEP;
+                              setParticleRunDays(Math.max(PARTICLE_RUN_DAYS_STEP, rounded));
+                            }}
+                          />
+                        </label>
+                        <div className="sectionSubhead">
+                          Seeds below local bathymetry are lifted just above bottom; land and
+                          too-shallow clicks are ignored.
+                        </div>
+                        <div className="sectionSubhead">
+                          Integrator: up to 1 day per RK4 step; U/V/W are interpolated between 5-day
+                          means.
+                        </div>
+                        <div className="sectionSubhead">
+                          Wind, current, sea-ice, and SSH overlays are hidden while placing or
+                          running particles; after tracking finishes, layer controls work again.
+                        </div>
+                        <div className="sectionSubhead">
+                          Trajectory colors use the colorbar shown on the map; scalar colors sample
+                          the selected date snapshot.
+                        </div>
+                        <label>
+                          Direction
+                          <select
+                            className="selectCompact"
+                            value={particleDirection === 1 ? "fwd" : "back"}
+                            onChange={(e) =>
+                              setParticleDirection(e.target.value === "back" ? -1 : 1)
+                            }
+                          >
+                            <option value="fwd">Forward</option>
+                            <option value="back">Backward</option>
+                          </select>
+                        </label>
+                        <div className="particleActions">
+                          <button
+                            className="particleActionButton particleActionPrimary"
+                            disabled={!particleSeeds.length || particleStatus === "running"}
+                            onClick={runParticles}
+                          >
+                            {particleStatus === "running"
+                              ? `Running ${(particleProgress * 100).toFixed(0)}%`
+                              : "Run particle tracking"}
+                          </button>
+                          <button
+                            className="particleActionButton particleActionSecondary"
+                            disabled={
+                              particleStatus === "running" ||
+                              (!particleSeeds.length && !particleTrajectories?.length)
+                            }
+                            onClick={clearParticles}
+                          >
+                            Clear seeds and paths
+                          </button>
+                        </div>
+                        {particleStatus === "failed" && particleError ? (
+                          <div className="sectionSubhead">Failed: {particleError}</div>
+                        ) : null}
+                        {particleNotice ? (
+                          <div className="sectionSubhead">{particleNotice}</div>
+                        ) : null}
+                        {particleStatus === "done" && particleTrajectories ? (
+                          <div className="sectionSubhead">
+                            {particleTrajectories.length} trajectories drawn (Three viewer).
+                          </div>
+                        ) : null}
+                        {particleTrajectories && particleTrajectories.length ? (
+                          <>
+                            <label>
+                              Color by
+                              <select
+                                className="selectCompact"
+                                value={particleColorMode}
+                                onChange={(e) =>
+                                  setParticleColorMode(e.target.value as ParticleColorMode)
+                                }
+                              >
+                                <option value="depth">Depth</option>
+                                <option value="age">Age (time)</option>
+                                <option value="speed">Speed</option>
+                                <option value="T" disabled={!hasTemperature}>
+                                  Temperature
+                                </option>
+                                <option value="S" disabled={!hasSalinity}>
+                                  Salinity
+                                </option>
+                                <option value="rho" disabled={!hasDensity}>
+                                  Potential density
+                                </option>
+                                <option value="index">Particle</option>
+                              </select>
+                            </label>
+                            {particleScalarColorMode && particleScalarStatus === "loading" ? (
+                              <div className="sectionSubhead">
+                                Loading{" "}
+                                {particleColorModeLabel(particleScalarColorMode).toLowerCase()}{" "}
+                                colors for {activeTimeLabel}.
+                              </div>
+                            ) : null}
+                            {particleScalarColorMode &&
+                            particleScalarStatus === "failed" &&
+                            particleScalarError ? (
+                              <div className="sectionSubhead">
+                                Coloring failed: {particleScalarError}
+                              </div>
+                            ) : null}
+                            <div className="toggleRow" style={{ gap: 8, marginTop: 6 }}>
+                              <button
+                                className="particleActionButton particleActionSecondary"
+                                onClick={() => setParticlePlaying((p) => !p)}
+                              >
+                                {particlePlaying ? "Pause trajectory" : "Play trajectory"}
+                              </button>
+                            </div>
+                            <label>
+                              Time{" "}
+                              {particlePlaying
+                                ? "(playing)"
+                                : `(${Math.round(particleScrub * 100)}%)`}
+                              <input
+                                type="range"
+                                min="0"
+                                max="100"
+                                value={String(Math.round(particleScrub * 100))}
+                                disabled={particlePlaying}
+                                onChange={(e) =>
+                                  setParticleScrub(
+                                    Math.max(0, Math.min(1, Number(e.target.value) / 100))
+                                  )
+                                }
+                              />
+                            </label>
+                          </>
+                        ) : null}
                       </div>
                     )}
                     <label>
@@ -5601,17 +6890,21 @@ export default function App() {
                       </select>
                     </label>
                     <div className="hint">
-                      Temperature, Salinity, and Potential density share one scalar layer; turning one on switches the others off.
+                      Temperature, Salinity, and Potential density share one scalar layer; turning
+                      one on switches the others off.
                     </div>
                   </div>
 
                   <div className="sectionSubheadRow">
-                    <span className="sectionGlyph sectionGlyphColor" aria-hidden>◐</span>
+                    <span className="sectionGlyph sectionGlyphColor" aria-hidden>
+                      ◐
+                    </span>
                     <div className="sectionSubhead">Color scale</div>
                   </div>
                   {viewMode === "eddies" ? (
                     <div className="hint">
-                      Eddy mode uses fixed warm/cold anomaly colors. Variable choice still controls the detector.
+                      Eddy mode uses fixed warm/cold anomaly colors. Variable choice still controls
+                      the detector.
                     </div>
                   ) : null}
                   <label>
@@ -5679,9 +6972,15 @@ export default function App() {
                         <input
                           type="text"
                           inputMode="decimal"
-                          value={drawDisplayedColorInput?.min ?? colorInputs?.min ?? String(settings.cmin)}
+                          value={
+                            drawDisplayedColorInput?.min ??
+                            colorInputs?.min ??
+                            String(settings.cmin)
+                          }
                           disabled={drawAutoColorRangeActive}
-                          onInput={(e) => updateColorInputLive("min", (e.target as HTMLInputElement).value)}
+                          onInput={(e) =>
+                            updateColorInputLive("min", (e.target as HTMLInputElement).value)
+                          }
                           onBlur={() => commitColorInput("min")}
                           onKeyDown={(e) => {
                             if (e.key === "Enter") commitColorInput("min");
@@ -5692,7 +6991,12 @@ export default function App() {
                           <button
                             type="button"
                             className="tab"
-                            style={{ minWidth: 28, padding: "2px 8px", lineHeight: 1, fontWeight: 700 }}
+                            style={{
+                              minWidth: 28,
+                              padding: "2px 8px",
+                              lineHeight: 1,
+                              fontWeight: 700,
+                            }}
                             disabled={drawAutoColorRangeActive}
                             onClick={() => nudgeColorScaleBound("min", 1)}
                             aria-label="Increase minimum"
@@ -5703,7 +7007,12 @@ export default function App() {
                           <button
                             type="button"
                             className="tab"
-                            style={{ minWidth: 28, padding: "2px 8px", lineHeight: 1, fontWeight: 700 }}
+                            style={{
+                              minWidth: 28,
+                              padding: "2px 8px",
+                              lineHeight: 1,
+                              fontWeight: 700,
+                            }}
                             disabled={drawAutoColorRangeActive}
                             onClick={() => nudgeColorScaleBound("min", -1)}
                             aria-label="Decrease minimum"
@@ -5720,9 +7029,15 @@ export default function App() {
                         <input
                           type="text"
                           inputMode="decimal"
-                          value={drawDisplayedColorInput?.max ?? colorInputs?.max ?? String(settings.cmax)}
+                          value={
+                            drawDisplayedColorInput?.max ??
+                            colorInputs?.max ??
+                            String(settings.cmax)
+                          }
                           disabled={drawAutoColorRangeActive}
-                          onInput={(e) => updateColorInputLive("max", (e.target as HTMLInputElement).value)}
+                          onInput={(e) =>
+                            updateColorInputLive("max", (e.target as HTMLInputElement).value)
+                          }
                           onBlur={() => commitColorInput("max")}
                           onKeyDown={(e) => {
                             if (e.key === "Enter") commitColorInput("max");
@@ -5733,7 +7048,12 @@ export default function App() {
                           <button
                             type="button"
                             className="tab"
-                            style={{ minWidth: 28, padding: "2px 8px", lineHeight: 1, fontWeight: 700 }}
+                            style={{
+                              minWidth: 28,
+                              padding: "2px 8px",
+                              lineHeight: 1,
+                              fontWeight: 700,
+                            }}
                             disabled={drawAutoColorRangeActive}
                             onClick={() => nudgeColorScaleBound("max", 1)}
                             aria-label="Increase maximum"
@@ -5744,7 +7064,12 @@ export default function App() {
                           <button
                             type="button"
                             className="tab"
-                            style={{ minWidth: 28, padding: "2px 8px", lineHeight: 1, fontWeight: 700 }}
+                            style={{
+                              minWidth: 28,
+                              padding: "2px 8px",
+                              lineHeight: 1,
+                              fontWeight: 700,
+                            }}
                             disabled={drawAutoColorRangeActive}
                             onClick={() => nudgeColorScaleBound("max", -1)}
                             aria-label="Decrease maximum"
@@ -5758,7 +7083,12 @@ export default function App() {
                   </div>
 
                   <div style={{ display: "flex", gap: 10 }}>
-                    <button type="button" className="tab" onClick={resetColorScale} style={{ flex: 1 }}>
+                    <button
+                      type="button"
+                      className="tab"
+                      onClick={resetColorScale}
+                      style={{ flex: 1 }}
+                    >
                       Reset default
                     </button>
                     <button
@@ -5767,7 +7097,11 @@ export default function App() {
                       onClick={autoColorScaleFromFrame}
                       style={{ flex: 1 }}
                       disabled={sliceStatus !== "ready"}
-                      title={sliceStatus !== "ready" ? "Load a slice first" : "Auto range from current frame"}
+                      title={
+                        sliceStatus !== "ready"
+                          ? "Load a slice first"
+                          : "Auto range from current frame"
+                      }
                     >
                       Auto (frame)
                     </button>
@@ -5780,7 +7114,12 @@ export default function App() {
                         <button
                           type="button"
                           className="tab"
-                          style={{ minWidth: 28, padding: "2px 8px", lineHeight: 1, fontWeight: 700 }}
+                          style={{
+                            minWidth: 28,
+                            padding: "2px 8px",
+                            lineHeight: 1,
+                            fontWeight: 700,
+                          }}
                           disabled={safeTickCountIndex <= 0}
                           onClick={() => nudgeTickCount(-1)}
                           aria-label="Previous tick count"
@@ -5808,7 +7147,12 @@ export default function App() {
                         <button
                           type="button"
                           className="tab"
-                          style={{ minWidth: 28, padding: "2px 8px", lineHeight: 1, fontWeight: 700 }}
+                          style={{
+                            minWidth: 28,
+                            padding: "2px 8px",
+                            lineHeight: 1,
+                            fontWeight: 700,
+                          }}
                           disabled={safeTickCountIndex >= tickCountOptions.length - 1}
                           onClick={() => nudgeTickCount(1)}
                           aria-label="Next tick count"
@@ -5858,16 +7202,25 @@ export default function App() {
                   ) : null}
 
                   <div className="hint">
-                    Default: <b>[
-                      {viewMode === "class" ? DEFAULT_CLASS_SETTINGS[varId].min : DEFAULT_COLOR_SETTINGS[varId].cmin},
-                      {" "}
-                      {viewMode === "class" ? DEFAULT_CLASS_SETTINGS[varId].max : DEFAULT_COLOR_SETTINGS[varId].cmax}
-                    ]</b>
+                    Default:{" "}
+                    <b>
+                      [
+                      {viewMode === "class"
+                        ? DEFAULT_CLASS_SETTINGS[varId].min
+                        : DEFAULT_COLOR_SETTINGS[varId].cmin}
+                      ,{" "}
+                      {viewMode === "class"
+                        ? DEFAULT_CLASS_SETTINGS[varId].max
+                        : DEFAULT_COLOR_SETTINGS[varId].cmax}
+                      ]
+                    </b>
                   </div>
 
                   <div ref={(node) => assignTutorialTarget("tempo", node)}>
                     <div className="sectionSubheadRow">
-                      <span className="sectionGlyph sectionGlyphTempo" aria-hidden>◷</span>
+                      <span className="sectionGlyph sectionGlyphTempo" aria-hidden>
+                        ◷
+                      </span>
                       <div className="sectionSubhead">Tempo-spatial</div>
                     </div>
                     <div className="toggleRow">
@@ -5918,7 +7271,9 @@ export default function App() {
                       </select>
                     </label>
 
-                    {viewMode === "horizontal" || viewMode === "draw" ? (
+                    {viewMode === "horizontal" ||
+                    viewMode === "draw" ||
+                    viewMode === "particles" ? (
                       <>
                         <label>
                           Depth ({activeDepthLabel})
@@ -5968,8 +7323,12 @@ export default function App() {
                           <span>{latMin.toFixed(1)}°N</span>
                           <span>{latMax.toFixed(1)}°N</span>
                         </div>
-                        <div className="hint">Slice the latitude target to move the zonal section north or south.</div>
-                        <div style={{ display: "flex", alignItems: "stretch", gap: 8, marginTop: 8 }}>
+                        <div className="hint">
+                          Slice the latitude target to move the zonal section north or south.
+                        </div>
+                        <div
+                          style={{ display: "flex", alignItems: "stretch", gap: 8, marginTop: 8 }}
+                        >
                           <input
                             type="number"
                             value={latTargetInput}
@@ -5988,7 +7347,12 @@ export default function App() {
                             <button
                               type="button"
                               className="tab"
-                              style={{ minWidth: 28, padding: "2px 8px", lineHeight: 1, fontWeight: 700 }}
+                              style={{
+                                minWidth: 28,
+                                padding: "2px 8px",
+                                lineHeight: 1,
+                                fontWeight: 700,
+                              }}
                               disabled={metaStatus !== "ready" || latTarget >= latMax}
                               onClick={() => {
                                 const next = nudgeRangeValue(
@@ -6009,7 +7373,12 @@ export default function App() {
                             <button
                               type="button"
                               className="tab"
-                              style={{ minWidth: 28, padding: "2px 8px", lineHeight: 1, fontWeight: 700 }}
+                              style={{
+                                minWidth: 28,
+                                padding: "2px 8px",
+                                lineHeight: 1,
+                                fontWeight: 700,
+                              }}
                               disabled={metaStatus !== "ready" || latTarget <= latMin}
                               onClick={() => {
                                 const next = nudgeRangeValue(
@@ -6030,14 +7399,18 @@ export default function App() {
                           </div>
                         </div>
                         {transectLatActual != null ? (
-                          <div className="hint">Nearest model latitude: {transectLatActual.toFixed(3)}°N</div>
+                          <div className="hint">
+                            Nearest model latitude: {transectLatActual.toFixed(3)}°N
+                          </div>
                         ) : null}
                       </label>
                     ) : null}
                   </div>
                   <div ref={(node) => assignTutorialTarget("masks", node)}>
                     <div className="sectionSubheadRow">
-                      <span className="sectionGlyph sectionGlyphMask" aria-hidden>◍</span>
+                      <span className="sectionGlyph sectionGlyphMask" aria-hidden>
+                        ◍
+                      </span>
                       <div className="sectionSubhead">Masks</div>
                     </div>
                     <div className="toggleGrid2">
@@ -6047,18 +7420,29 @@ export default function App() {
                       </div>
                       <div className="toggleRow">
                         <div>Greenland Sea</div>
-                        <ToggleSwitch checked={showGreenlandSeaMask} onCheckedChange={setShowGreenlandSeaMask} />
+                        <ToggleSwitch
+                          checked={showGreenlandSeaMask}
+                          onCheckedChange={setShowGreenlandSeaMask}
+                        />
                       </div>
                       <div className="toggleRow">
                         <div>Iceland Sea</div>
-                        <ToggleSwitch checked={showIcelandSeaMask} onCheckedChange={setShowIcelandSeaMask} />
+                        <ToggleSwitch
+                          checked={showIcelandSeaMask}
+                          onCheckedChange={setShowIcelandSeaMask}
+                        />
                       </div>
                       <div className="toggleRow">
                         <div>Norwegian Sea</div>
-                        <ToggleSwitch checked={showNorwegianSeaMask} onCheckedChange={setShowNorwegianSeaMask} />
+                        <ToggleSwitch
+                          checked={showNorwegianSeaMask}
+                          onCheckedChange={setShowNorwegianSeaMask}
+                        />
                       </div>
                     </div>
-                    <div className="hint">Turn on a mask to hide that subdomain; none selected = full domain.</div>
+                    <div className="hint">
+                      Turn on a mask to hide that subdomain; none selected = full domain.
+                    </div>
                     {allSubdomainMasksEnabled ? (
                       <div className="hint" style={{ color: "rgba(255,196,120,0.96)" }}>
                         All four masks are on, so scalar fields are hidden everywhere.
@@ -6083,7 +7467,9 @@ export default function App() {
                   {viewMode === "class" ? (
                     <div ref={(node) => assignTutorialTarget("class", node)}>
                       <div className="sectionSubheadRow">
-                        <span className="sectionGlyph sectionGlyphClass" aria-hidden>⌗</span>
+                        <span className="sectionGlyph sectionGlyphClass" aria-hidden>
+                          ⌗
+                        </span>
                         <div className="sectionSubhead">Class settings</div>
                       </div>
                       <label>
@@ -6092,7 +7478,9 @@ export default function App() {
                           type="text"
                           inputMode="decimal"
                           value={classInputs?.min ?? String(classSettings.min)}
-                          onInput={(e) => updateClassInputLive("min", (e.target as HTMLInputElement).value)}
+                          onInput={(e) =>
+                            updateClassInputLive("min", (e.target as HTMLInputElement).value)
+                          }
                           onBlur={() => commitClassInput("min")}
                           onKeyDown={(e) => {
                             if (e.key === "Enter") commitClassInput("min");
@@ -6105,7 +7493,9 @@ export default function App() {
                           type="text"
                           inputMode="decimal"
                           value={classInputs?.max ?? String(classSettings.max)}
-                          onInput={(e) => updateClassInputLive("max", (e.target as HTMLInputElement).value)}
+                          onInput={(e) =>
+                            updateClassInputLive("max", (e.target as HTMLInputElement).value)
+                          }
                           onBlur={() => commitClassInput("max")}
                           onKeyDown={(e) => {
                             if (e.key === "Enter") commitClassInput("max");
@@ -6151,7 +7541,8 @@ export default function App() {
                           Showing {range.title} classes in [{classMin}, {classMax}].
                         </div>
                         <div className="hint">
-                          Effective half-width: +/-{classHalfWidthEffective.toFixed(2)}{" (auto >= interval/2)."}
+                          Effective half-width: +/-{classHalfWidthEffective.toFixed(2)}
+                          {" (auto >= interval/2)."}
                         </div>
                       </label>
                       <label>
@@ -6163,7 +7554,9 @@ export default function App() {
                           value={clampClassDensity(classDensity)}
                           onChange={(next) => setClassDensity(clampClassDensity(next))}
                         />
-                        <div className="hint">Lower is faster/sparser; higher is denser/slower.</div>
+                        <div className="hint">
+                          Lower is faster/sparser; higher is denser/slower.
+                        </div>
                       </label>
                       <button
                         type="button"
@@ -6197,13 +7590,17 @@ export default function App() {
                     <div className="infoCard">
                       <div className="infoLabel">Dataset</div>
                       <div className="infoValue">
-                        {meta?.storeUrl ? meta.storeUrl.split("/").slice(-1)[0] : "public/data/nordic.zarr"}
+                        {meta?.storeUrl
+                          ? meta.storeUrl.split("/").slice(-1)[0]
+                          : "public/data/nordic.zarr"}
                       </div>
                       <div className="infoMeta">Meta {metaStatus}</div>
                     </div>
                     <div className="infoCard">
                       <div className="infoLabel">3D runtime</div>
-                      <div className="infoValue">{effectiveRenderer3d}: {bathyInfo.plotly}</div>
+                      <div className="infoValue">
+                        {effectiveRenderer3d}: {bathyInfo.plotly}
+                      </div>
                       <div className="infoMeta">Bathy {bathyInfo.bathy}</div>
                     </div>
                     <div className="infoCard">
@@ -6220,13 +7617,17 @@ export default function App() {
                             ? isoRenderMode === "volumeSplit"
                               ? `split ${isoValueLabel}`
                               : `iso ${isoValueLabel}`
-                          : activeDepthLabel}
+                            : activeDepthLabel}
                       </div>
                     </div>
                     <div className="infoCard">
                       <div className="infoLabel">Overlays</div>
                       <div className="infoValue">
-                        {showWind ? `Wind ${windStatus}` : showSeaIce ? `Ice ${seaIceStatus}` : "No extra layer"}
+                        {showWind
+                          ? `Wind ${windStatus}`
+                          : showSeaIce
+                            ? `Ice ${seaIceStatus}`
+                            : "No extra layer"}
                       </div>
                       <div className="infoMeta">
                         Horizontal {bathyInfo.horizontalImage}, transect {bathyInfo.transectImage}
@@ -6235,13 +7636,24 @@ export default function App() {
                   </div>
 
                   <div className="sectionSubheadRow">
-                    <span className="sectionGlyph sectionGlyphData" aria-hidden>◨</span>
+                    <span className="sectionGlyph sectionGlyphData" aria-hidden>
+                      ◨
+                    </span>
                     <div className="sectionSubhead">Data and coverage</div>
                   </div>
-                  <div className="hint">Time coverage: <b>{timeCoverageLabel}</b></div>
-                  <div className="hint">Vertical range: <b>{depthCoverageLabel}</b> across <b>{zList.length || 0}</b> levels.</div>
-                  <div className="hint">Domain: <b>{domainLabel}</b></div>
-                  <div className="hint">Bundled local fields are coarsened to a <b>312 x 320</b> horizontal grid.</div>
+                  <div className="hint">
+                    Time coverage: <b>{timeCoverageLabel}</b>
+                  </div>
+                  <div className="hint">
+                    Vertical range: <b>{depthCoverageLabel}</b> across <b>{zList.length || 0}</b>{" "}
+                    levels.
+                  </div>
+                  <div className="hint">
+                    Domain: <b>{domainLabel}</b>
+                  </div>
+                  <div className="hint">
+                    Bundled local fields are coarsened to a <b>312 x 320</b> horizontal grid.
+                  </div>
                   <div className="hint">
                     Masks:{" "}
                     <b>
@@ -6257,7 +7669,9 @@ export default function App() {
                   </div>
 
                   <div className="sectionSubheadRow">
-                    <span className="sectionGlyph sectionGlyphErr" aria-hidden>!</span>
+                    <span className="sectionGlyph sectionGlyphErr" aria-hidden>
+                      !
+                    </span>
                     <div className="sectionSubhead">Errors</div>
                   </div>
                   {loadErrors.length ? (
@@ -6298,7 +7712,13 @@ export default function App() {
                         opacity: 0.9,
                       }}
                     >
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                      <svg
+                        width="14"
+                        height="14"
+                        viewBox="0 0 24 24"
+                        fill="currentColor"
+                        aria-hidden="true"
+                      >
                         <path d="M12 2a10 10 0 100 20 10 10 0 000-20zm6.93 9h-3.16a15.7 15.7 0 00-1.38-5.03A8.03 8.03 0 0118.93 11zM12 4.04c.86 1.16 1.78 3.27 2.15 6.96H9.85C10.22 7.31 11.14 5.2 12 4.04zM4.07 13h3.16c.14 1.86.6 3.62 1.38 5.03A8.03 8.03 0 014.07 13zm3.16-2H4.07a8.03 8.03 0 014.54-5.03A15.7 15.7 0 007.23 11zM12 19.96c-.86-1.16-1.78-3.27-2.15-6.96h4.31c-.37 3.69-1.29 5.8-2.16 6.96zM14.77 13h3.16a8.03 8.03 0 01-4.54 5.03c.78-1.41 1.24-3.17 1.38-5.03z" />
                       </svg>
                     </a>
@@ -6317,7 +7737,13 @@ export default function App() {
                         opacity: 0.9,
                       }}
                     >
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                      <svg
+                        width="14"
+                        height="14"
+                        viewBox="0 0 24 24"
+                        fill="currentColor"
+                        aria-hidden="true"
+                      >
                         <path d="M12 2a10 10 0 00-3.16 19.49c.5.09.68-.21.68-.48v-1.68c-2.78.6-3.37-1.18-3.37-1.18-.46-1.15-1.11-1.46-1.11-1.46-.91-.61.07-.6.07-.6 1 .07 1.53 1.03 1.53 1.03.9 1.53 2.36 1.09 2.94.83.09-.64.35-1.09.64-1.34-2.22-.25-4.56-1.11-4.56-4.95 0-1.09.39-1.99 1.03-2.69-.1-.25-.45-1.27.1-2.64 0 0 .84-.27 2.75 1.03A9.6 9.6 0 0112 6.84c.85 0 1.71.11 2.51.33 1.91-1.3 2.75-1.03 2.75-1.03.55 1.37.2 2.39.1 2.64.64.7 1.03 1.6 1.03 2.69 0 3.85-2.34 4.7-4.57 4.95.36.31.68.92.68 1.86v2.76c0 .27.18.57.69.47A10 10 0 0012 2z" />
                       </svg>
                     </a>
@@ -6337,7 +7763,13 @@ export default function App() {
                         opacity: 0.9,
                       }}
                     >
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                      <svg
+                        width="14"
+                        height="14"
+                        viewBox="0 0 24 24"
+                        fill="currentColor"
+                        aria-hidden="true"
+                      >
                         <path d="M12 2a10 10 0 100 20 10 10 0 000-20zm6.93 9h-3.16a15.7 15.7 0 00-1.38-5.03A8.03 8.03 0 0118.93 11zM12 4.04c.86 1.16 1.78 3.27 2.15 6.96H9.85C10.22 7.31 11.14 5.2 12 4.04zM4.07 13h3.16c.14 1.86.6 3.62 1.38 5.03A8.03 8.03 0 014.07 13zm3.16-2H4.07a8.03 8.03 0 014.54-5.03A15.7 15.7 0 007.23 11zM12 19.96c-.86-1.16-1.78-3.27-2.15-6.96h4.31c-.37 3.69-1.29 5.8-2.16 6.96zM14.77 13h3.16a8.03 8.03 0 01-4.54 5.03c.78-1.41 1.24-3.17 1.38-5.03z" />
                       </svg>
                       <span>Twin site</span>
@@ -6349,8 +7781,112 @@ export default function App() {
           </div>
         )}
 
+        {particlePlaybackInfo ? (
+          <div className="particleInfoOverlay" aria-live="polite">
+            <div className="particleInfoHeader">
+              <div>
+                <div className="particleInfoEyebrow">Particle playback</div>
+                <div className="particleInfoTitle">
+                  Trajectory {particlePlaybackInfo.page} / {particlePlaybackInfo.count}
+                </div>
+              </div>
+              <div className="particleInfoStatus">{particlePlaying ? "Playing" : "Paused"}</div>
+            </div>
+            <div className="particleInfoToggleRow">
+              <div>
+                <span>Map display</span>
+                <strong>{particlePlaybackInfo.visible ? "Shown" : "Hidden"}</strong>
+              </div>
+              <ToggleSwitch
+                checked={particlePlaybackInfo.visible}
+                onCheckedChange={(checked) =>
+                  setParticleHidden((prev) => {
+                    const next = { ...prev };
+                    if (checked) delete next[particlePlaybackInfo.selectedIndex];
+                    else next[particlePlaybackInfo.selectedIndex] = true;
+                    return next;
+                  })
+                }
+              />
+            </div>
+            {particlePlaybackInfo.count > 1 ? (
+              <div className="particleInfoPager">
+                <button
+                  type="button"
+                  className="particleInfoButton"
+                  disabled={!particlePlaybackInfo.hasPrev}
+                  onClick={() => setParticleInfoIndex((idx) => Math.max(0, idx - 1))}
+                >
+                  Previous
+                </button>
+                <button
+                  type="button"
+                  className="particleInfoButton"
+                  disabled={!particlePlaybackInfo.hasNext}
+                  onClick={() =>
+                    setParticleInfoIndex((idx) => Math.min(particlePlaybackInfo.count - 1, idx + 1))
+                  }
+                >
+                  Next
+                </button>
+              </div>
+            ) : null}
+            <div className="particleInfoGrid">
+              <div>
+                <span>Day</span>
+                <strong>{particlePlaybackInfo.elapsedDays.toFixed(0)}</strong>
+              </div>
+              <div>
+                <span>Date</span>
+                <strong>{particlePlaybackInfo.date ?? "n/a"}</strong>
+              </div>
+              <div>
+                <span>Depth</span>
+                <strong>{formatParticleDepthValue(particlePlaybackInfo.currentDepth)}</strong>
+              </div>
+              <div>
+                <span>Temp</span>
+                <strong>{particlePlaybackInfo.formatTemp(particlePlaybackInfo.tempCurrent)}</strong>
+              </div>
+            </div>
+            <div className="particleEndpointGrid">
+              <div>
+                <span>Start</span>
+                <strong>{formatParticleLonLat(particlePlaybackInfo.start)}</strong>
+                <em>
+                  {formatParticleDepthValue(particlePlaybackInfo.start?.depth)} ·{" "}
+                  {particlePlaybackInfo.formatTemp(particlePlaybackInfo.tempStart)}
+                </em>
+              </div>
+              <div>
+                <span>Current</span>
+                <strong>{formatParticleLonLat(particlePlaybackInfo.current)}</strong>
+                <em>{formatParticleDepthValue(particlePlaybackInfo.current?.depth)}</em>
+              </div>
+              <div>
+                <span>End</span>
+                <strong>{formatParticleLonLat(particlePlaybackInfo.end)}</strong>
+                <em>
+                  {formatParticleDepthValue(particlePlaybackInfo.end?.depth)} ·{" "}
+                  {particlePlaybackInfo.formatTemp(particlePlaybackInfo.tempEnd)}
+                </em>
+              </div>
+            </div>
+            {particlePlaybackInfo.stopped ? (
+              <div className="particleInfoNote">
+                This trajectory stopped at land, bottom, or data edge.
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+
         {tutorialState !== "hidden" ? (
-          <div className="tutorialModalWrap" role="dialog" aria-modal="true" aria-labelledby="tutorial-title">
+          <div
+            className="tutorialModalWrap"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="tutorial-title"
+          >
             <div className="tutorialBackdrop" />
             {tutorialState === "active" && tutorialLayout ? (
               <>
@@ -6392,7 +7928,9 @@ export default function App() {
               className={`tutorialCard panel ${
                 tutorialState === "active" && tutorialLayout ? "tutorialCardFloating" : ""
               }`}
-              data-placement={tutorialState === "active" && tutorialLayout ? tutorialLayout.placement : undefined}
+              data-placement={
+                tutorialState === "active" && tutorialLayout ? tutorialLayout.placement : undefined
+              }
               style={
                 tutorialState === "active" && tutorialLayout
                   ? { top: tutorialLayout.card.top, left: tutorialLayout.card.left }
@@ -6423,14 +7961,19 @@ export default function App() {
               {tutorialState === "prompt" ? (
                 <>
                   <div className="tutorialBody">
-                    This viewer has several map and section modes. You can skip this now and reopen the tutorial later
-                    with the <strong>?</strong> button in the control panel header.
+                    This viewer has map, section, isosurface, and particle tracking modes. The panel
+                    adapts for desktop and phones. You can reopen this tutorial later with the{" "}
+                    <strong>?</strong> button.
                   </div>
                   <div className="tutorialActions">
                     <button type="button" className="tutorialButton" onClick={() => hideTutorial()}>
                       Skip for now
                     </button>
-                    <button type="button" className="tutorialButton tutorialButtonPrimary" onClick={startTutorial}>
+                    <button
+                      type="button"
+                      className="tutorialButton tutorialButtonPrimary"
+                      onClick={startTutorial}
+                    >
                       Start tutorial
                     </button>
                   </div>
@@ -6446,7 +7989,11 @@ export default function App() {
                     ))}
                   </ul>
                   <div className="tutorialActions">
-                    <button type="button" className="tutorialButton" onClick={() => hideTutorial(false)}>
+                    <button
+                      type="button"
+                      className="tutorialButton"
+                      onClick={() => hideTutorial(false)}
+                    >
                       Hide
                     </button>
                     <div className="tutorialSpacer" />
@@ -6458,7 +8005,11 @@ export default function App() {
                     >
                       Back
                     </button>
-                    <button type="button" className="tutorialButton tutorialButtonPrimary" onClick={advanceTutorial}>
+                    <button
+                      type="button"
+                      className="tutorialButton tutorialButtonPrimary"
+                      onClick={advanceTutorial}
+                    >
                       {tutorialStepIndex >= TUTORIAL_STEPS.length - 1 ? "Finish" : "Next"}
                     </button>
                   </div>

@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>panel preview</title>
+  <link rel="stylesheet" href="src/styles.css" />
+  <style>
+    /* approximate the map backdrop so the glass panel reads correctly */
+    html,body{margin:0;height:100%;}
+    body{
+      min-height:100dvh;
+      background:
+        radial-gradient(120% 90% at 30% 10%, #1b3a5a 0%, #0a1422 55%, #050a12 100%);
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    }
+    .fakeLabel{font-size:12px;opacity:.7;margin-bottom:4px;display:block;}
+    .hint{font-size:11px;opacity:.72;line-height:1.45;}
+  </style>
+</head>
+<body data-theme="night">
+  <!-- ===== control panel (mobile bottom-sheet inline style mirrors panelStyle) ===== -->
+  <div class="panel controlPanel iosSettingsPanel"
+       style="left:0;right:0;bottom:0;width:auto;max-height:82dvh;">
+    <div class="panelHeader" title="Drag to move">
+      <div style="display:flex;align-items:center;gap:8px;">
+        <div style="font-size:12px;opacity:0.7;">Control Panel</div>
+        <button type="button" class="panelIconButton" title="Reset view">⟲</button>
+        <button type="button" class="panelIconButton" title="Theme">☀</button>
+      </div>
+      <div class="panelHeaderRight">
+        <button type="button" class="panelIconButton" title="Collapse">▾</button>
+      </div>
+    </div>
+
+    <div class="panelResizeHandle panelResizeHandleNW"></div>
+    <div class="panelResizeHandle panelResizeHandleNE"></div>
+    <div class="panelResizeHandle panelResizeHandleSW"></div>
+    <div class="panelResizeHandle panelResizeHandleSE"></div>
+
+    <div class="tabs tabs6">
+      <button class="tab">Surface</button>
+      <button class="tab">Section</button>
+      <button class="tab">Class</button>
+      <button class="tab">Iso</button>
+      <button class="tab" aria-pressed="true">Particles</button>
+      <button class="tab">3D</button>
+    </div>
+
+    <div class="section">
+      <span class="fakeLabel">Variable</span>
+      <select>
+        <option>Temperature</option>
+        <option>Salinity</option>
+      </select>
+    </div>
+
+    <div class="section">
+      <span class="fakeLabel">Depth (m)</span>
+      <input type="range" min="0" max="100" value="20" />
+      <input type="number" value="100" />
+    </div>
+
+    <div class="section">
+      <span class="fakeLabel">Run length (days)</span>
+      <input type="number" value="60" />
+      <div class="hint" style="margin-top:8px;">
+        Method: RK4 through the time-varying field — bilinear interpolation in
+        space, linear in time between the 5-day snapshots. Accuracy is
+        illustrative, not research-grade.
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== tutorial overlay (floating card given desktop coords on purpose) ===== -->
+  <div class="tutorialModalWrap">
+    <div class="tutorialBackdrop"></div>
+    <div class="tutorialCard tutorialCardFloating" data-placement="right"
+         style="top:120px;left:680px;">
+      <div class="tutorialHeader">
+        <div>
+          <div class="tutorialEyebrow">Step 5 of 9</div>
+          <div class="tutorialTitle">Particle Tracking</div>
+        </div>
+      </div>
+      <div class="tutorialBody">
+        Switch to the Particles mode, click the map to seed drifters, then run to
+        watch their 3D paths evolve through the time-varying flow.
+      </div>
+      <div class="tutorialActions">
+        <button class="tutorialButton">Back</button>
+        <div class="tutorialSpacer"></div>
+        <button class="tutorialButton tutorialButtonPrimary">Next</button>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

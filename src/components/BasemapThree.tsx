@@ -3,7 +3,11 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { withBase } from "../lib/paths";
 import { makeSyntheticGreenlandSeaBathy } from "../lib/syntheticBathy";
-import { bathyCandidates, loadBathyGridFromCandidates, type BathyGrid as SharedBathyGrid } from "../lib/bathyJson";
+import {
+  bathyCandidates,
+  loadBathyGridFromCandidates,
+  type BathyGrid as SharedBathyGrid,
+} from "../lib/bathyJson";
 import { formatColorbarTick, formatColorbarTickText } from "../lib/colorbar";
 import type { RGB } from "../lib/colormap";
 
@@ -156,6 +160,8 @@ type WindParticle = {
   trail: Array<{ x: number; y: number; speed: number }>;
 };
 
+type TrajectoryColorMode = "index" | "depth" | "age" | "speed" | "T" | "S" | "rho";
+
 const TARGET_VERTICES_MODEL = 90000;
 const TARGET_VERTICES_RTOPO = 70000;
 const TARGET_FIELD_VERTICES = 70000;
@@ -174,8 +180,20 @@ async function tryLoadBathyJson(
   const candidates = bathyCandidates();
   const urls =
     effective === "rtopo"
-      ? [candidates.rtopo, candidates.legacyRTopo, candidates.legacyRTopoDs, candidates.model, candidates.legacyNordic]
-      : [candidates.model, candidates.legacyNordic, candidates.legacyGreenlandSea, candidates.legacyBathy, candidates.rtopo];
+      ? [
+          candidates.rtopo,
+          candidates.legacyRTopo,
+          candidates.legacyRTopoDs,
+          candidates.model,
+          candidates.legacyNordic,
+        ]
+      : [
+          candidates.model,
+          candidates.legacyNordic,
+          candidates.legacyGreenlandSea,
+          candidates.legacyBathy,
+          candidates.rtopo,
+        ];
   const payload = await loadBathyGridFromCandidates(urls);
   if (payload) {
     const zNumeric = payload.z.map((row) => row.map((v) => Number(v)));
@@ -215,7 +233,10 @@ async function tryLoadBathyJson(
 
 function pickStride(nx: number, ny: number, maxVertices: number) {
   let stride = 1;
-  while (Math.ceil(nx / stride) * Math.ceil(ny / stride) > maxVertices && stride < Math.max(nx, ny)) {
+  while (
+    Math.ceil(nx / stride) * Math.ceil(ny / stride) > maxVertices &&
+    stride < Math.max(nx, ny)
+  ) {
     stride += 1;
   }
   return stride;
@@ -239,7 +260,9 @@ function downsampleGrid(grid: BathyGrid, maxVertices: number): BathyGrid {
   const lon = xIdx.map((i) => Number(grid.lon[i]));
   const lat = yIdx.map((j) => Number(grid.lat[j]));
   const z = yIdx.map((j) => xIdx.map((i) => Number(grid.z[j]?.[i])));
-  const zRaw = grid.zRaw ? yIdx.map((j) => xIdx.map((i) => Number(grid.zRaw?.[j]?.[i]))) : undefined;
+  const zRaw = grid.zRaw
+    ? yIdx.map((j) => xIdx.map((i) => Number(grid.zRaw?.[j]?.[i])))
+    : undefined;
   return { lon, lat, z, zRaw };
 }
 
@@ -257,7 +280,10 @@ function toColorscaleStops(scale: Array<[number, string]>) {
     .filter((entry) => Number.isFinite(entry.t));
   out.sort((a, b) => a.t - b.t);
   if (!out.length) {
-    out.push({ t: 0, color: new THREE.Color("#ffffff") }, { t: 1, color: new THREE.Color("#ffffff") });
+    out.push(
+      { t: 0, color: new THREE.Color("#ffffff") },
+      { t: 1, color: new THREE.Color("#ffffff") }
+    );
   }
   if (out[0].t > 0) out.unshift({ t: 0, color: out[0].color.clone() });
   if (out[out.length - 1].t < 1) out.push({ t: 1, color: out[out.length - 1].color.clone() });
@@ -297,7 +323,8 @@ function colorscaleToCssGradient(colorscale: Array<[number, string]>) {
   }
   const clamped = stops.map((s) => ({ t: clamp(s.t, 0, 1), color: s.color }));
   if (clamped[0].t > 0) clamped.unshift({ t: 0, color: clamped[0].color });
-  if (clamped[clamped.length - 1].t < 1) clamped.push({ t: 1, color: clamped[clamped.length - 1].color });
+  if (clamped[clamped.length - 1].t < 1)
+    clamped.push({ t: 1, color: clamped[clamped.length - 1].color });
   const parts = clamped.map((s) => `${s.color} ${(s.t * 100).toFixed(2)}%`);
   return `linear-gradient(to top, ${parts.join(", ")})`;
 }
@@ -313,7 +340,8 @@ function paletteToCssGradient(palette: RGB[]) {
 }
 
 function makeAutoTicks(min: number, max: number, count = 6) {
-  if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min) return [min, max].filter((v) => Number.isFinite(v));
+  if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min)
+    return [min, max].filter((v) => Number.isFinite(v));
   const out: number[] = [];
   const n = Math.max(2, count);
   for (let i = 0; i < n; i += 1) {
@@ -354,7 +382,8 @@ function makeBathymetryTicks(min: number, max: number) {
   const rawStep = Math.abs(span) / 4;
   const exponent = Math.floor(Math.log10(Math.max(rawStep, 1e-9)));
   const fraction = rawStep / 10 ** exponent;
-  const niceFraction = fraction <= 1.5 ? 1 : fraction <= 3 ? 2 : fraction <= 4.5 ? 2.5 : fraction <= 7 ? 5 : 10;
+  const niceFraction =
+    fraction <= 1.5 ? 1 : fraction <= 3 ? 2 : fraction <= 4.5 ? 2.5 : fraction <= 7 ? 5 : 10;
   const step = niceFraction * 10 ** exponent;
   const start = Math.ceil(min / step) * step;
   const end = Math.floor(max / step) * step;
@@ -363,7 +392,9 @@ function makeBathymetryTicks(min: number, max: number) {
     ticks.push(Number(v.toFixed(6)));
   }
   if (ticks.length < 2) {
-    return [Number(min.toFixed(0)), Number(max.toFixed(0))].filter((v, i, arr) => arr.indexOf(v) === i);
+    return [Number(min.toFixed(0)), Number(max.toFixed(0))].filter(
+      (v, i, arr) => arr.indexOf(v) === i
+    );
   }
   return ticks;
 }
@@ -375,8 +406,103 @@ function disposeObject(object: THREE.Object3D | null) {
     const geometry = (mesh as { geometry?: THREE.BufferGeometry }).geometry;
     const material = (mesh as { material?: THREE.Material | THREE.Material[] }).material;
     if (geometry) geometry.dispose();
-    if (Array.isArray(material)) material.forEach((entry) => entry?.dispose?.());
-    else material?.dispose?.();
+    const disposeMaterial = (entry?: THREE.Material) => {
+      const map = (entry as { map?: THREE.Texture | null } | undefined)?.map;
+      map?.dispose?.();
+      entry?.dispose?.();
+    };
+    if (Array.isArray(material)) material.forEach((entry) => disposeMaterial(entry));
+    else disposeMaterial(material);
+  });
+}
+
+function makeRoundPointTexture() {
+  const canvas = document.createElement("canvas");
+  canvas.width = 32;
+  canvas.height = 32;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+  const gradient = ctx.createRadialGradient(16, 16, 0, 16, 16, 15);
+  gradient.addColorStop(0, "rgba(255,255,255,1)");
+  gradient.addColorStop(0.68, "rgba(255,255,255,1)");
+  gradient.addColorStop(1, "rgba(255,255,255,0)");
+  ctx.fillStyle = gradient;
+  ctx.beginPath();
+  ctx.arc(16, 16, 15, 0, Math.PI * 2);
+  ctx.fill();
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.needsUpdate = true;
+  return texture;
+}
+
+function makeCanvasTexture(draw: (ctx: CanvasRenderingContext2D, size: number) => void, size = 96) {
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+  draw(ctx, size);
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.needsUpdate = true;
+  return texture;
+}
+
+function makeSeedLabelTexture(label: string) {
+  return makeCanvasTexture((ctx, size) => {
+    ctx.clearRect(0, 0, size, size);
+    ctx.fillStyle = "rgba(3, 7, 18, 0.82)";
+    ctx.strokeStyle = "rgba(250, 204, 21, 0.95)";
+    ctx.lineWidth = 5;
+    ctx.beginPath();
+    ctx.arc(size / 2, size / 2, size * 0.28, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = "#ffffff";
+    ctx.font = `700 ${Math.round(size * 0.34)}px system-ui, -apple-system, Segoe UI, sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(label, size / 2, size / 2 + 1);
+  });
+}
+
+function makeFishTexture() {
+  return makeCanvasTexture((ctx, size) => {
+    const cx = size * 0.54;
+    const cy = size * 0.5;
+    ctx.clearRect(0, 0, size, size);
+    ctx.fillStyle = "#facc15";
+    ctx.strokeStyle = "rgba(8, 13, 24, 0.72)";
+    ctx.lineWidth = 3.5;
+    ctx.lineJoin = "round";
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, size * 0.25, size * 0.125, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(size * 0.28, cy);
+    ctx.lineTo(size * 0.1, size * 0.36);
+    ctx.lineTo(size * 0.1, size * 0.64);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(size * 0.76, cy);
+    ctx.quadraticCurveTo(size * 0.88, size * 0.38, size * 0.92, size * 0.44);
+    ctx.quadraticCurveTo(size * 0.84, cy, size * 0.92, size * 0.56);
+    ctx.quadraticCurveTo(size * 0.88, size * 0.62, size * 0.76, cy);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.48)";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(size * 0.5, size * 0.39);
+    ctx.quadraticCurveTo(size * 0.44, cy, size * 0.5, size * 0.61);
+    ctx.stroke();
+    ctx.fillStyle = "#07111f";
+    ctx.beginPath();
+    ctx.arc(size * 0.73, size * 0.45, size * 0.032, 0, Math.PI * 2);
+    ctx.fill();
   });
 }
 
@@ -389,7 +515,15 @@ function buildScalarPlaneMesh(opts: {
   verticalScale: number;
   maxVertices?: number;
 }): THREE.Mesh | null {
-  const { field, frame, meshLon, meshLat, meshDepth, verticalScale, maxVertices = TARGET_FIELD_VERTICES } = opts;
+  const {
+    field,
+    frame,
+    meshLon,
+    meshLat,
+    meshDepth,
+    verticalScale,
+    maxVertices = TARGET_FIELD_VERTICES,
+  } = opts;
   const values = field.values;
   const nyFull = values.length;
   const nxFull = Array.isArray(values[0]) ? values[0].length : 0;
@@ -548,7 +682,13 @@ function buildIsoDepthMesh(opts: {
       const d10 = Number(layer.depth[j0]?.[i1]);
       const d01 = Number(layer.depth[j1]?.[i0]);
       const d11 = Number(layer.depth[j1]?.[i1]);
-      if (!Number.isFinite(d00) || !Number.isFinite(d10) || !Number.isFinite(d01) || !Number.isFinite(d11)) continue;
+      if (
+        !Number.isFinite(d00) ||
+        !Number.isFinite(d10) ||
+        !Number.isFinite(d01) ||
+        !Number.isFinite(d11)
+      )
+        continue;
 
       const x00 = toX(Number(layer.lon[i0]));
       const x10 = toX(Number(layer.lon[i1]));
@@ -695,8 +835,14 @@ function buildClassVoxelObject(opts: {
   const lonSpacing = estimateAverageSpacing(lonValues);
   const latSpacing = estimateAverageSpacing(latValues);
   const depthSpacing = estimateAverageSpacing(depthValues.map((v) => Math.abs(v)));
-  const sizeX = Math.max(0.8, (Number.isFinite(lonSpacing) ? (lonSpacing / lonSpan) * frame.width : frame.width / 70) * 0.9);
-  const sizeY = Math.max(0.8, (Number.isFinite(latSpacing) ? (latSpacing / latSpan) * frame.height : frame.height / 70) * 0.9);
+  const sizeX = Math.max(
+    0.8,
+    (Number.isFinite(lonSpacing) ? (lonSpacing / lonSpan) * frame.width : frame.width / 70) * 0.9
+  );
+  const sizeY = Math.max(
+    0.8,
+    (Number.isFinite(latSpacing) ? (latSpacing / latSpan) * frame.height : frame.height / 70) * 0.9
+  );
   const sizeZ = Math.max(18, (Number.isFinite(depthSpacing) ? depthSpacing : 140) * 0.9);
   const toX = (lon: number) => ((lon - frame.lonMin) / lonSpan - 0.5) * frame.width;
   const toY = (lat: number) => ((lat - frame.latMin) / latSpan - 0.5) * frame.height;
@@ -805,7 +951,13 @@ function buildIsoVolumeBodiesObject(opts: {
       const d10 = Number(layer.interfaceDepth[j]?.[i + 1]);
       const d01 = Number(layer.interfaceDepth[j + 1]?.[i]);
       const d11 = Number(layer.interfaceDepth[j + 1]?.[i + 1]);
-      if (!Number.isFinite(d00) || !Number.isFinite(d10) || !Number.isFinite(d01) || !Number.isFinite(d11)) continue;
+      if (
+        !Number.isFinite(d00) ||
+        !Number.isFinite(d10) ||
+        !Number.isFinite(d01) ||
+        !Number.isFinite(d11)
+      )
+        continue;
 
       const lonCenter = (lon0 + lon1) * 0.5;
       const latCenter = (lat0 + lat1) * 0.5;
@@ -885,8 +1037,31 @@ export default function BasemapThree(props: {
     len?: number;
   };
   guidePath?: GuidePath;
-  onSurfacePick?: (pick: { lon: number; lat: number }) => void;
-  onSurfaceHover?: (pick: { lon: number; lat: number } | null) => void;
+  trajectoryLayer?: {
+    enabled: boolean;
+    colorMode?: TrajectoryColorMode;
+    colorbar?: {
+      title: string;
+      colorscale: Array<[number, string]>;
+      cmin: number;
+      cmax: number;
+      ticks: number[];
+      tickText?: string[];
+      len?: number;
+    };
+    seeds: { lon: number; lat: number; depth: number; label?: string }[];
+    trajectories: {
+      lon: number[];
+      lat: number[];
+      depth: number[];
+      colorValue?: number[];
+      beached: boolean;
+      visible?: boolean;
+    }[];
+  };
+  trajectoryAnim?: { progress: number; playing: boolean };
+  onSurfacePick?: (pick: { lon: number; lat: number; bottomDepth?: number }) => void;
+  onSurfaceHover?: (pick: { lon: number; lat: number; bottomDepth?: number } | null) => void;
   drawingMode?: boolean;
   viewerHint?: string;
   onStatusChange?: (status: {
@@ -914,6 +1089,20 @@ export default function BasemapThree(props: {
   const isoVolumeBodiesRef = useRef<THREE.Object3D | null>(null);
   const isoSurfaceRef = useRef<THREE.Mesh | null>(null);
   const guideRef = useRef<THREE.Object3D | null>(null);
+  const trajRef = useRef<THREE.Object3D | null>(null);
+  const trajAnimRef = useRef<{
+    items: Array<{
+      line: any;
+      dots: any;
+      head: any;
+      headLabel: any;
+      pos: Float32Array;
+      n: number;
+      lastK: number;
+      visible: boolean;
+    }>;
+  } | null>(null);
+  const trajRafRef = useRef<number | null>(null);
   const windCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const animationRef = useRef<number | null>(null);
   const windRafRef = useRef<number | null>(null);
@@ -942,70 +1131,69 @@ export default function BasemapThree(props: {
   const bathyPalette = props.bathyPalette ?? [];
   const verticalScale = BASE_Z_SCALE * clamp(Number(props.depthRatio ?? 0.5), 0.1, 2.5);
 
-  const fitCameraToDomain = useCallback((force = false) => {
-    const camera = cameraRef.current;
-    const controls = controlsRef.current;
-    const fit = domainFitRef.current;
-    if (!camera || !controls || !fit) return;
+  const fitCameraToDomain = useCallback(
+    (force = false) => {
+      const camera = cameraRef.current;
+      const controls = controlsRef.current;
+      const fit = domainFitRef.current;
+      if (!camera || !controls || !fit) return;
 
-    const center = fit.center;
-    const domainRadius = fit.radius;
-    const hostWidth = Math.max(1, containerRef.current?.clientWidth ?? 1);
-    const reservedLeftRatio = clamp((props.fitReservedLeftPx ?? 0) / hostWidth, 0, 0.42);
-    const frameTarget = center
-      .clone()
-      .add(new THREE.Vector3(-domainRadius * (0.035 + reservedLeftRatio * 0.9), 0, 0));
+      const center = fit.center;
+      const domainRadius = fit.radius;
+      const hostWidth = Math.max(1, containerRef.current?.clientWidth ?? 1);
+      const reservedLeftRatio = clamp((props.fitReservedLeftPx ?? 0) / hostWidth, 0, 0.42);
+      const frameTarget = center
+        .clone()
+        .add(new THREE.Vector3(-domainRadius * (0.035 + reservedLeftRatio * 0.9), 0, 0));
 
-    camera.updateMatrixWorld();
-    const targetDist = controls.target.distanceTo(frameTarget);
-    const camDist = camera.position.distanceTo(center);
-    const ndc = center.clone().project(camera);
-    const centerOffViewport =
-      !Number.isFinite(ndc.x) ||
-      !Number.isFinite(ndc.y) ||
-      !Number.isFinite(ndc.z) ||
-      Math.abs(ndc.x) > 0.35 ||
-      Math.abs(ndc.y) > 0.35 ||
-      ndc.z < -1 ||
-      ndc.z > 1;
-    const shouldRecenter =
-      force ||
-      !Number.isFinite(targetDist) ||
-      !Number.isFinite(camDist) ||
-      centerOffViewport ||
-      targetDist > domainRadius * 0.2 ||
-      camDist > domainRadius * 10 ||
-      camDist < domainRadius * 0.15;
-    if (!shouldRecenter) return;
+      camera.updateMatrixWorld();
+      const targetDist = controls.target.distanceTo(frameTarget);
+      const camDist = camera.position.distanceTo(center);
+      const ndc = center.clone().project(camera);
+      const centerOffViewport =
+        !Number.isFinite(ndc.x) ||
+        !Number.isFinite(ndc.y) ||
+        !Number.isFinite(ndc.z) ||
+        Math.abs(ndc.x) > 0.35 ||
+        Math.abs(ndc.y) > 0.35 ||
+        ndc.z < -1 ||
+        ndc.z > 1;
+      const shouldRecenter =
+        force ||
+        !Number.isFinite(targetDist) ||
+        !Number.isFinite(camDist) ||
+        centerOffViewport ||
+        targetDist > domainRadius * 0.2 ||
+        camDist > domainRadius * 10 ||
+        camDist < domainRadius * 0.15;
+      if (!shouldRecenter) return;
 
-    let direction = camera.position.clone().sub(controls.target);
-    if (force || direction.lengthSq() < 1e-8) {
-      direction.copy(DEFAULT_NORTHWARD_CAMERA_DIRECTION);
-    }
-    direction.normalize();
+      const direction = camera.position.clone().sub(controls.target);
+      if (force || direction.lengthSq() < 1e-8) {
+        direction.copy(DEFAULT_NORTHWARD_CAMERA_DIRECTION);
+      }
+      direction.normalize();
 
-    const fovRad = THREE.MathUtils.degToRad(camera.fov);
-    const hFovRad = 2 * Math.atan(Math.tan(fovRad * 0.5) * Math.max(1e-4, camera.aspect || 1));
-    const fitDist = Math.max(
-      domainRadius / Math.max(1e-4, Math.sin(fovRad * 0.5)),
-      domainRadius / Math.max(1e-4, Math.sin(hFovRad * 0.5))
-    );
-    const currentDist = camera.position.distanceTo(controls.target);
-    const safeDist = force
-      ? fitDist * 0.80
-      : clamp(
-          Number.isFinite(currentDist) ? currentDist : fitDist,
-          fitDist * 0.90,
-          fitDist * 3.2
-        );
+      const fovRad = THREE.MathUtils.degToRad(camera.fov);
+      const hFovRad = 2 * Math.atan(Math.tan(fovRad * 0.5) * Math.max(1e-4, camera.aspect || 1));
+      const fitDist = Math.max(
+        domainRadius / Math.max(1e-4, Math.sin(fovRad * 0.5)),
+        domainRadius / Math.max(1e-4, Math.sin(hFovRad * 0.5))
+      );
+      const currentDist = camera.position.distanceTo(controls.target);
+      const safeDist = force
+        ? fitDist * 0.8
+        : clamp(Number.isFinite(currentDist) ? currentDist : fitDist, fitDist * 0.9, fitDist * 3.2);
 
-    controls.target.copy(frameTarget);
-    camera.position.copy(frameTarget.clone().addScaledVector(direction, safeDist));
-    camera.lookAt(frameTarget);
-    camera.updateMatrixWorld(true);
-    controls.update();
-    didSetInitialTargetRef.current = true;
-  }, [props.fitReservedLeftPx]);
+      controls.target.copy(frameTarget);
+      camera.position.copy(frameTarget.clone().addScaledVector(direction, safeDist));
+      camera.lookAt(frameTarget);
+      camera.updateMatrixWorld(true);
+      controls.update();
+      didSetInitialTargetRef.current = true;
+    },
+    [props.fitReservedLeftPx]
+  );
 
   const isDayTheme = props.themeMode === "day";
 
@@ -1020,21 +1208,24 @@ export default function BasemapThree(props: {
     }
   }, []);
 
-  const scheduleStabilizedFit = useCallback((force = true) => {
-    cancelScheduledFits();
-    fitCameraToDomain(force);
-    fitRetryRafRef.current = window.requestAnimationFrame(() => {
+  const scheduleStabilizedFit = useCallback(
+    (force = true) => {
+      cancelScheduledFits();
       fitCameraToDomain(force);
       fitRetryRafRef.current = window.requestAnimationFrame(() => {
         fitCameraToDomain(force);
-        fitRetryRafRef.current = null;
+        fitRetryRafRef.current = window.requestAnimationFrame(() => {
+          fitCameraToDomain(force);
+          fitRetryRafRef.current = null;
+        });
       });
-    });
-    [120, 280, 520, 900, 1500].forEach((delayMs) => {
-      const id = window.setTimeout(() => fitCameraToDomain(force), delayMs);
-      fitRetryTimeoutsRef.current.push(id);
-    });
-  }, [cancelScheduledFits, fitCameraToDomain]);
+      [120, 280, 520, 900, 1500].forEach((delayMs) => {
+        const id = window.setTimeout(() => fitCameraToDomain(force), delayMs);
+        fitRetryTimeoutsRef.current.push(id);
+      });
+    },
+    [cancelScheduledFits, fitCameraToDomain]
+  );
 
   useEffect(() => {
     onSurfaceHoverRef.current = props.onSurfaceHover;
@@ -1084,30 +1275,35 @@ export default function BasemapThree(props: {
   }, [bathyStatus, props.onStatusChange, runtimeStatus]);
 
   const pickFromClient = useMemo(
-    () => (clientX: number, clientY: number): { lon: number; lat: number } | null => {
-      const renderer = rendererRef.current;
-      const camera = cameraRef.current;
-      const mesh = meshRef.current;
-      const frame = meshFrameRef.current;
-      if (!renderer || !camera || !mesh || !frame) return null;
-      const canvas = renderer.domElement;
-      const rect = canvas.getBoundingClientRect();
-      if (rect.width <= 0 || rect.height <= 0) return null;
-      pointerRef.current.x = ((clientX - rect.left) / rect.width) * 2 - 1;
-      pointerRef.current.y = -((clientY - rect.top) / rect.height) * 2 + 1;
-      raycasterRef.current.setFromCamera(pointerRef.current, camera);
-      const hits = raycasterRef.current.intersectObject(mesh, false);
-      if (!hits.length) return null;
-      const local = hits[0].point.clone();
-      mesh.worldToLocal(local);
-      const u = (local.x + frame.width / 2) / frame.width;
-      const v = (local.y + frame.height / 2) / frame.height;
-      if (u < 0 || u > 1 || v < 0 || v > 1) return null;
-      return {
-        lon: frame.lonMin + u * (frame.lonMax - frame.lonMin),
-        lat: frame.latMin + v * (frame.latMax - frame.latMin),
-      };
-    },
+    () =>
+      (
+        clientX: number,
+        clientY: number
+      ): { lon: number; lat: number; bottomDepth?: number } | null => {
+        const renderer = rendererRef.current;
+        const camera = cameraRef.current;
+        const mesh = meshRef.current;
+        const frame = meshFrameRef.current;
+        if (!renderer || !camera || !mesh || !frame) return null;
+        const canvas = renderer.domElement;
+        const rect = canvas.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) return null;
+        pointerRef.current.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+        pointerRef.current.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+        raycasterRef.current.setFromCamera(pointerRef.current, camera);
+        const hits = raycasterRef.current.intersectObject(mesh, false);
+        if (!hits.length) return null;
+        const local = hits[0].point.clone();
+        mesh.worldToLocal(local);
+        const u = (local.x + frame.width / 2) / frame.width;
+        const v = (local.y + frame.height / 2) / frame.height;
+        if (u < 0 || u > 1 || v < 0 || v > 1) return null;
+        return {
+          lon: frame.lonMin + u * (frame.lonMax - frame.lonMin),
+          lat: frame.latMin + v * (frame.latMax - frame.latMin),
+          bottomDepth: Number.isFinite(local.z) ? local.z : undefined,
+        };
+      },
     []
   );
 
@@ -1294,9 +1490,7 @@ export default function BasemapThree(props: {
     } catch (error: unknown) {
       console.error("Three.js initialization failed", error);
       setRuntimeStatus("failed");
-      setRuntimeError(
-        error instanceof Error ? error.message : "Three.js initialization failed."
-      );
+      setRuntimeError(error instanceof Error ? error.message : "Three.js initialization failed.");
       return undefined;
     }
   }, [cancelScheduledFits, fitCameraToDomain, pickFromClient]);
@@ -1333,6 +1527,7 @@ export default function BasemapThree(props: {
     if (overlayPlanesRef.current) overlayPlanesRef.current.scale.z = verticalScale;
     if (isoVolumeBodiesRef.current) isoVolumeBodiesRef.current.scale.z = verticalScale;
     if (isoSurfaceRef.current) isoSurfaceRef.current.scale.z = verticalScale;
+    if (trajRef.current) trajRef.current.scale.z = verticalScale;
   }, [verticalScale]);
 
   useEffect(() => {
@@ -1356,7 +1551,8 @@ export default function BasemapThree(props: {
     const controls = controlsRef.current;
     if (!scene || !grid) return;
 
-    const maxVertices = props.bathySource === "rtopo" ? TARGET_VERTICES_RTOPO : TARGET_VERTICES_MODEL;
+    const maxVertices =
+      props.bathySource === "rtopo" ? TARGET_VERTICES_RTOPO : TARGET_VERTICES_MODEL;
     const sampled = downsampleGrid(grid, maxVertices);
     const nx = sampled.lon.length;
     const ny = sampled.lat.length;
@@ -1450,8 +1646,8 @@ export default function BasemapThree(props: {
       lat: sampled.lat.slice(),
     };
     meshDepthRef.current = (sampled.zRaw ?? sampled.z).map((row) => row.map((v) => Number(v)));
-    const centerZ = ((zMin + zMax) * 0.5) * verticalScale;
-    const halfDepth = ((zMax - zMin) * 0.5) * verticalScale;
+    const centerZ = (zMin + zMax) * 0.5 * verticalScale;
+    const halfDepth = (zMax - zMin) * 0.5 * verticalScale;
     const domainRadius = Math.max(1, Math.hypot(width * 0.5, height * 0.5, halfDepth));
     domainFitRef.current = {
       center: new THREE.Vector3(0, 0, centerZ),
@@ -1673,7 +1869,10 @@ export default function BasemapThree(props: {
         ticks,
         tickText: classLayer.colorbarTickText?.length
           ? classLayer.colorbarTickText
-          : formatColorbarTickText(ticks, classLayer.colorbarTitle ?? classLayer.varLabel ?? "Class"),
+          : formatColorbarTickText(
+              ticks,
+              classLayer.colorbarTitle ?? classLayer.varLabel ?? "Class"
+            ),
         len: clamp(Number(classLayer.colorbarLen ?? 0.62), 0.25, 0.95),
       });
     }
@@ -1719,6 +1918,28 @@ export default function BasemapThree(props: {
       });
     }
 
+    const tc = props.trajectoryLayer?.colorbar;
+    if (
+      props.trajectoryLayer?.enabled &&
+      tc &&
+      Array.isArray(tc.colorscale) &&
+      tc.colorscale.length &&
+      Number.isFinite(tc.cmin) &&
+      Number.isFinite(tc.cmax) &&
+      tc.cmax > tc.cmin
+    ) {
+      out.push({
+        id: "trajectory",
+        title: tc.title,
+        gradient: colorscaleToCssGradient(tc.colorscale),
+        min: tc.cmin,
+        max: tc.cmax,
+        ticks: tc.ticks,
+        tickText: tc.tickText,
+        len: clamp(Number(tc.len ?? 0.52), 0.25, 0.95),
+      });
+    }
+
     if (
       props.bathyColorbar?.enabled &&
       (props.showBathy ?? true) &&
@@ -1752,6 +1973,7 @@ export default function BasemapThree(props: {
     props.isoSurfaceLayer,
     props.showBathy,
     props.currentsColorbar,
+    props.trajectoryLayer,
   ]);
 
   useEffect(() => {
@@ -1793,6 +2015,281 @@ export default function BasemapThree(props: {
     mesh.add(line);
   }, [props.guidePath]);
 
+  // Lagrangian particle trajectories: per-vertex-colored 3-D polylines + seed
+  // markers, scaled in z like the bathymetry and other 3-D overlays.
+  useEffect(() => {
+    const scene = sceneRef.current;
+    const frame = meshFrameRef.current;
+    if (trajRafRef.current != null) {
+      window.cancelAnimationFrame(trajRafRef.current);
+      trajRafRef.current = null;
+    }
+    if (trajRef.current) {
+      trajRef.current.parent?.remove(trajRef.current);
+      disposeObject(trajRef.current);
+      trajRef.current = null;
+    }
+    trajAnimRef.current = null;
+    if (!scene) return;
+    const layer = props.trajectoryLayer;
+    if (!layer?.enabled || !frame) return;
+    const colorMode = layer.colorMode ?? "index";
+    const toWorld = (lon: number, lat: number): [number, number] => {
+      const u = clamp((lon - frame.lonMin) / Math.max(1e-9, frame.lonMax - frame.lonMin), 0, 1);
+      const v = clamp((lat - frame.latMin) / Math.max(1e-9, frame.latMax - frame.latMin), 0, 1);
+      return [(u - 0.5) * frame.width, (v - 0.5) * frame.height];
+    };
+    const ramp = (t: number) =>
+      new THREE.Color(`hsl(${(1 - Math.max(0, Math.min(1, t))) * 240}, 90%, 55%)`);
+    const valueStops = layer.colorbar?.colorscale?.length
+      ? toColorscaleStops(layer.colorbar.colorscale)
+      : null;
+    const valueMin = Number(layer.colorbar?.cmin);
+    const valueMax = Number(layer.colorbar?.cmax);
+    const colorFromDisplayValue = (value: number, fallback: THREE.Color) => {
+      if (
+        !valueStops ||
+        !Number.isFinite(value) ||
+        !Number.isFinite(valueMin) ||
+        !Number.isFinite(valueMax) ||
+        valueMax <= valueMin
+      ) {
+        return fallback;
+      }
+      return colorFromScaleStops(valueStops, (value - valueMin) / (valueMax - valueMin));
+    };
+
+    // global depth range (shallow..deep) for depth coloring
+    let dShallow = -Infinity;
+    let dDeep = Infinity;
+    if (colorMode === "depth") {
+      for (const tr of layer.trajectories) {
+        for (const d of tr.depth) {
+          if (Number.isFinite(d)) {
+            if (d > dShallow) dShallow = d;
+            if (d < dDeep) dDeep = d;
+          }
+        }
+      }
+    }
+    const dSpan = Math.max(1e-6, dShallow - dDeep);
+
+    const group = new THREE.Group();
+    group.scale.z = verticalScale;
+    group.renderOrder = 10;
+    const items: Array<{
+      line: any;
+      dots: any;
+      head: any;
+      headLabel: any;
+      pos: Float32Array;
+      n: number;
+      lastK: number;
+      visible: boolean;
+    }> = [];
+    const dotTexture = makeRoundPointTexture();
+    layer.trajectories.forEach((tr, ti) => {
+      const n = Math.min(tr.lon.length, tr.lat.length, tr.depth.length);
+      if (n < 2) return;
+      const isVisible = tr.visible !== false;
+      const positions = new Float32Array(n * 3);
+      const colors = new Float32Array(n * 3);
+      const baseCol = new THREE.Color(`hsl(${(ti * 67) % 360}, 95%, 58%)`);
+      for (let i = 0; i < n; i += 1) {
+        const [wx, wy] = toWorld(Number(tr.lon[i]), Number(tr.lat[i]));
+        positions[i * 3] = wx;
+        positions[i * 3 + 1] = wy;
+        positions[i * 3 + 2] = Number(tr.depth[i]);
+        let c = baseCol;
+        if (tr.colorValue?.length) {
+          c = colorFromDisplayValue(Number(tr.colorValue[i]), c);
+        } else if (colorMode === "age") c = ramp(n > 1 ? i / (n - 1) : 0);
+        else if (colorMode === "depth") c = ramp((dShallow - Number(tr.depth[i])) / dSpan);
+        colors[i * 3] = c.r;
+        colors[i * 3 + 1] = c.g;
+        colors[i * 3 + 2] = c.b;
+      }
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+      geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+      const line = new THREE.Line(
+        geo,
+        new THREE.LineBasicMaterial({
+          vertexColors: true,
+          transparent: true,
+          opacity: tr.beached ? 0.55 : 1,
+          linewidth: 2,
+          depthTest: false,
+          depthWrite: false,
+        })
+      );
+      line.renderOrder = 10;
+      line.visible = isVisible;
+      group.add(line);
+      const dots = new THREE.Points(
+        geo,
+        new THREE.PointsMaterial({
+          vertexColors: true,
+          map: dotTexture ?? undefined,
+          alphaTest: dotTexture ? 0.08 : 0,
+          size: 4.2,
+          sizeAttenuation: false,
+          transparent: true,
+          depthTest: false,
+        })
+      );
+      dots.renderOrder = 10;
+      dots.visible = isVisible;
+      group.add(dots);
+      const fishTexture = makeFishTexture();
+      const head = new THREE.Sprite(
+        new THREE.SpriteMaterial({
+          map: fishTexture ?? undefined,
+          color: fishTexture ? undefined : new THREE.Color("#fff200"),
+          transparent: true,
+          depthTest: false,
+          depthWrite: false,
+        })
+      );
+      head.scale.set(13, 8, 1);
+      head.renderOrder = 12;
+      head.visible = isVisible;
+      group.add(head);
+      const headLabelTexture = makeSeedLabelTexture(String(ti + 1));
+      const headLabel = new THREE.Sprite(
+        new THREE.SpriteMaterial({
+          map: headLabelTexture ?? undefined,
+          transparent: true,
+          depthTest: false,
+          depthWrite: false,
+        })
+      );
+      headLabel.scale.set(8, 8, 1);
+      headLabel.renderOrder = 13;
+      headLabel.visible = isVisible;
+      group.add(headLabel);
+      items.push({ line, dots, head, headLabel, pos: positions, n, lastK: -1, visible: isVisible });
+    });
+    if (layer.seeds.length) {
+      const sp = new Float32Array(layer.seeds.length * 3);
+      layer.seeds.forEach((s, i) => {
+        const [wx, wy] = toWorld(Number(s.lon), Number(s.lat));
+        sp[i * 3] = wx;
+        sp[i * 3 + 1] = wy;
+        sp[i * 3 + 2] = Number(s.depth);
+      });
+      const sg = new THREE.BufferGeometry();
+      sg.setAttribute("position", new THREE.BufferAttribute(sp, 3));
+      const spts = new THREE.Points(
+        sg,
+        new THREE.PointsMaterial({
+          color: new THREE.Color("#facc15"),
+          size: 8,
+          sizeAttenuation: false,
+          transparent: true,
+          depthTest: false,
+        })
+      );
+      spts.renderOrder = 11;
+      group.add(spts);
+      layer.seeds.forEach((s, i) => {
+        const labelTexture = makeSeedLabelTexture(String(s.label ?? i + 1));
+        const label = new THREE.Sprite(
+          new THREE.SpriteMaterial({
+            map: labelTexture ?? undefined,
+            transparent: true,
+            depthTest: false,
+            depthWrite: false,
+          })
+        );
+        label.position.set(sp[i * 3] + 6, sp[i * 3 + 1] + 6, sp[i * 3 + 2]);
+        label.scale.set(8, 8, 1);
+        label.renderOrder = 13;
+        group.add(label);
+      });
+    }
+    trajRef.current = group;
+    trajAnimRef.current = { items };
+    scene.add(group);
+    return () => {
+      if (trajRafRef.current != null) {
+        window.cancelAnimationFrame(trajRafRef.current);
+        trajRafRef.current = null;
+      }
+      if (trajRef.current) {
+        trajRef.current.parent?.remove(trajRef.current);
+        disposeObject(trajRef.current);
+        trajRef.current = null;
+      }
+      trajAnimRef.current = null;
+    };
+  }, [props.trajectoryLayer, meshFrameNonce, verticalScale]);
+
+  // Animate particles along their paths: manual scrub, or auto-play a ~8s sweep.
+  useEffect(() => {
+    const state = trajAnimRef.current;
+    if (trajRafRef.current != null) {
+      window.cancelAnimationFrame(trajRafRef.current);
+      trajRafRef.current = null;
+    }
+    if (!state) return;
+    const anim = props.trajectoryAnim;
+    const applyProgress = (p: number) => {
+      const progress = clamp(Number(p), 0, 1);
+      for (let idx = 0; idx < state.items.length; idx += 1) {
+        const it = state.items[idx];
+        it.line.visible = it.visible;
+        it.dots.visible = it.visible;
+        it.head.visible = it.visible;
+        it.headLabel.visible = it.visible;
+        if (!it.visible) continue;
+        const f = progress * Math.max(0, it.n - 1);
+        const i0 = Math.max(0, Math.min(it.n - 1, Math.floor(f)));
+        const i1 = Math.max(0, Math.min(it.n - 1, i0 + 1));
+        const k = Math.max(2, Math.min(it.n, i1 + 1));
+        if (it.lastK !== k) {
+          it.line.geometry.setDrawRange(0, k);
+          it.dots.geometry.setDrawRange(0, k);
+          it.lastK = k;
+        }
+        const t = f - i0;
+        const a = i0 * 3;
+        const b = i1 * 3;
+        const headX = it.pos[a] * (1 - t) + it.pos[b] * t;
+        const headY = it.pos[a + 1] * (1 - t) + it.pos[b + 1] * t;
+        const headZ = it.pos[a + 2] * (1 - t) + it.pos[b + 2] * t;
+        const prev = Math.max(0, i0 - 1) * 3;
+        const prevX = i0 === i1 ? it.pos[prev] : it.pos[a];
+        const prevY = i0 === i1 ? it.pos[prev + 1] : it.pos[a + 1];
+        it.head.position.set(headX, headY, headZ);
+        it.head.material.rotation = Math.atan2(headY - prevY, headX - prevX);
+        it.headLabel.position.set(headX + 7, headY + 7, headZ);
+      }
+    };
+    if (anim?.playing) {
+      const SWEEP_SEC = 8;
+      let t = clamp(Number(anim.progress ?? 0), 0, 1);
+      let last = 0;
+      const tick = (ts: number) => {
+        if (!last) last = ts;
+        t += Math.min(0.05, (ts - last) / 1000) / SWEEP_SEC;
+        last = ts;
+        if (t > 1) t -= 1;
+        applyProgress(t);
+        trajRafRef.current = window.requestAnimationFrame(tick);
+      };
+      trajRafRef.current = window.requestAnimationFrame(tick);
+    } else {
+      applyProgress(anim?.progress ?? 1);
+    }
+    return () => {
+      if (trajRafRef.current != null) {
+        window.cancelAnimationFrame(trajRafRef.current);
+        trajRafRef.current = null;
+      }
+    };
+  }, [props.trajectoryLayer, props.trajectoryAnim, meshFrameNonce]);
+
   useEffect(() => {
     if (windRafRef.current != null) {
       window.cancelAnimationFrame(windRafRef.current);
@@ -1816,7 +2313,16 @@ export default function BasemapThree(props: {
     const renderer = rendererRef.current;
     const camera = cameraRef.current;
     const controls = controlsRef.current;
-    if (!inputLayers.length || !frame || !meshAxes || !meshDepth || !renderer || !camera || !controls || !canvas)
+    if (
+      !inputLayers.length ||
+      !frame ||
+      !meshAxes ||
+      !meshDepth ||
+      !renderer ||
+      !camera ||
+      !controls ||
+      !canvas
+    )
       return;
 
     const meshLon = meshAxes.lon;
@@ -1852,20 +2358,34 @@ export default function BasemapThree(props: {
       const d10 = Number(meshDepth[j0]?.[i1]);
       const d01 = Number(meshDepth[j1]?.[i0]);
       const d11 = Number(meshDepth[j1]?.[i1]);
-      if (!Number.isFinite(d00) || !Number.isFinite(d10) || !Number.isFinite(d01) || !Number.isFinite(d11)) {
+      if (
+        !Number.isFinite(d00) ||
+        !Number.isFinite(d10) ||
+        !Number.isFinite(d01) ||
+        !Number.isFinite(d11)
+      ) {
         return false;
       }
-      const wetCorners = Number(d00 < oceanThreshold) + Number(d10 < oceanThreshold) + Number(d01 < oceanThreshold) + Number(d11 < oceanThreshold);
+      const wetCorners =
+        Number(d00 < oceanThreshold) +
+        Number(d10 < oceanThreshold) +
+        Number(d01 < oceanThreshold) +
+        Number(d11 < oceanThreshold);
       return wetCorners >= 2;
     };
 
     const project = (lonVal: number, latVal: number, zWorld: number) => {
-      const wx = ((lonVal - frame.lonMin) / Math.max(1e-9, frame.lonMax - frame.lonMin) - 0.5) * frame.width;
-      const wy = ((latVal - frame.latMin) / Math.max(1e-9, frame.latMax - frame.latMin) - 0.5) * frame.height;
+      const wx =
+        ((lonVal - frame.lonMin) / Math.max(1e-9, frame.lonMax - frame.lonMin) - 0.5) * frame.width;
+      const wy =
+        ((latVal - frame.latMin) / Math.max(1e-9, frame.latMax - frame.latMin) - 0.5) *
+        frame.height;
       const vec = new THREE.Vector3(wx, wy, zWorld);
       vec.project(camera);
-      if (!Number.isFinite(vec.x) || !Number.isFinite(vec.y) || !Number.isFinite(vec.z)) return null;
-      if (vec.z < -1.2 || vec.z > 1.2 || Math.abs(vec.x) > 1.2 || Math.abs(vec.y) > 1.2) return null;
+      if (!Number.isFinite(vec.x) || !Number.isFinite(vec.y) || !Number.isFinite(vec.z))
+        return null;
+      if (vec.z < -1.2 || vec.z > 1.2 || Math.abs(vec.x) > 1.2 || Math.abs(vec.y) > 1.2)
+        return null;
       const w = Math.max(1, canvas.clientWidth);
       const h = Math.max(1, canvas.clientHeight);
       return { x: (vec.x * 0.5 + 0.5) * w, y: (-vec.y * 0.5 + 0.5) * h };
@@ -1936,8 +2456,14 @@ export default function BasemapThree(props: {
         const v01 = Number(v[j1]?.[i0]);
         const v11 = Number(v[j1]?.[i1]);
         if (
-          !Number.isFinite(u00) || !Number.isFinite(u10) || !Number.isFinite(u01) || !Number.isFinite(u11) ||
-          !Number.isFinite(v00) || !Number.isFinite(v10) || !Number.isFinite(v01) || !Number.isFinite(v11)
+          !Number.isFinite(u00) ||
+          !Number.isFinite(u10) ||
+          !Number.isFinite(u01) ||
+          !Number.isFinite(u11) ||
+          !Number.isFinite(v00) ||
+          !Number.isFinite(v10) ||
+          !Number.isFinite(v01) ||
+          !Number.isFinite(v11)
         ) {
           return null;
         }
@@ -1962,7 +2488,10 @@ export default function BasemapThree(props: {
       }
       const targetDegPerSec = 1.8 * Math.max(0.1, Number(layer.speed ?? 1));
       const advectScale = maxMag > 1e-8 ? Math.min(120, targetDegPerSec / maxMag) : 0;
-      const nParticles = Math.max(40, Math.min(2800, Math.round(Number(layer.particleCount ?? 1000))));
+      const nParticles = Math.max(
+        40,
+        Math.min(2800, Math.round(Number(layer.particleCount ?? 1000)))
+      );
       const trailLen = Math.max(10, Math.min(44, Math.round((layer.size ?? 1.4) * 13)));
       const strokeColor = layer.color ?? "rgba(255,255,255,0.9)";
       const lineWidth = Math.max(0.8, Number(layer.size ?? 1.2));
@@ -2002,9 +2531,7 @@ export default function BasemapThree(props: {
       };
     };
 
-    const states = inputLayers
-      .map(buildLayerState)
-      .filter((s): s is LayerState => s != null);
+    const states = inputLayers.map(buildLayerState).filter((s): s is LayerState => s != null);
     if (!states.length) return;
     windParticlesRef.current = states.flatMap((s) => s.particles);
 
@@ -2026,7 +2553,9 @@ export default function BasemapThree(props: {
       if (!adaptiveStates.length) return;
       const currentDistance = camera.position.distanceTo(controls.target);
       const zoomDensity =
-        Number.isFinite(referenceDistance) && Number.isFinite(currentDistance) && currentDistance > 1e-6
+        Number.isFinite(referenceDistance) &&
+        Number.isFinite(currentDistance) &&
+        currentDistance > 1e-6
           ? clamp(referenceDistance / currentDistance, 1, 2.5)
           : 1;
       const baseTotal = adaptiveStates.reduce((sum, state) => sum + state.baseParticleCount, 0);
@@ -2035,7 +2564,10 @@ export default function BasemapThree(props: {
       for (const state of adaptiveStates) {
         const target = Math.max(
           24,
-          Math.min(2800, Math.round(desiredTotal * (state.baseParticleCount / Math.max(1, baseTotal))))
+          Math.min(
+            2800,
+            Math.round(desiredTotal * (state.baseParticleCount / Math.max(1, baseTotal)))
+          )
         );
         if (state.particles.length > target) {
           state.particles.length = target;
@@ -2050,8 +2582,14 @@ export default function BasemapThree(props: {
     const draw = () => {
       const ctx = canvas.getContext("2d");
       if (!ctx) return;
-      const cssW = Math.max(1, Math.round(canvas.clientWidth || renderer.domElement.clientWidth || 1));
-      const cssH = Math.max(1, Math.round(canvas.clientHeight || renderer.domElement.clientHeight || 1));
+      const cssW = Math.max(
+        1,
+        Math.round(canvas.clientWidth || renderer.domElement.clientWidth || 1)
+      );
+      const cssH = Math.max(
+        1,
+        Math.round(canvas.clientHeight || renderer.domElement.clientHeight || 1)
+      );
       const dpr = Math.max(1, Number(window.devicePixelRatio) || 1);
       const targetW = Math.max(1, Math.round(cssW * dpr));
       const targetH = Math.max(1, Math.round(cssH * dpr));
@@ -2119,7 +2657,13 @@ export default function BasemapThree(props: {
           p.x += (wm.uu / cosLatMid) * k;
           p.y += wm.vv * k;
           p.ttl -= dt;
-          if (!isOcean(p.x, p.y) || p.x < st.lonMin || p.x > st.lonMax || p.y < st.latMin || p.y > st.latMax) {
+          if (
+            !isOcean(p.x, p.y) ||
+            p.x < st.lonMin ||
+            p.x > st.lonMax ||
+            p.y < st.latMin ||
+            p.y > st.latMax
+          ) {
             particles[i] = st.spawn();
             continue;
           }
@@ -2146,16 +2690,16 @@ export default function BasemapThree(props: {
   const scalarColorbars = colorbars.filter((bar) => bar.id !== "bathy");
 
   return (
-      <div
-        className="basemap"
-        ref={containerRef}
-        style={{
-          cursor: props.drawingMode ? "crosshair" : "grab",
-          background: isDayTheme
-            ? "radial-gradient(1100px 760px at 58% 26%, rgba(234,243,251,0.96) 0%, rgba(201,221,239,0.94) 56%, rgba(173,197,221,0.92) 100%)"
-            : "radial-gradient(1100px 760px at 58% 26%, rgba(12,28,51,0.92) 0%, rgba(7,10,18,0.94) 58%, rgba(5,6,11,0.98) 100%)",
-        }}
-      >
+    <div
+      className="basemap"
+      ref={containerRef}
+      style={{
+        cursor: props.drawingMode ? "crosshair" : "grab",
+        background: isDayTheme
+          ? "radial-gradient(1100px 760px at 58% 26%, rgba(234,243,251,0.96) 0%, rgba(201,221,239,0.94) 56%, rgba(173,197,221,0.92) 100%)"
+          : "radial-gradient(1100px 760px at 58% 26%, rgba(12,28,51,0.92) 0%, rgba(7,10,18,0.94) 58%, rgba(5,6,11,0.98) 100%)",
+      }}
+    >
       {runtimeStatus === "loading" || bathyStatus === "loading" ? (
         <div
           style={{
@@ -2240,13 +2784,13 @@ export default function BasemapThree(props: {
                     left: `calc(${(t * 100).toFixed(2)}% - 16px)`,
                     top: 0,
                     width: 32,
-                  textAlign: "center",
-                  fontSize: 10,
-                  lineHeight: 1.1,
-                  color: "#ffffff",
-                  textShadow: "0 1px 2px rgba(0,0,0,0.7)",
-                  whiteSpace: "nowrap",
-                }}
+                    textAlign: "center",
+                    fontSize: 10,
+                    lineHeight: 1.1,
+                    color: "#ffffff",
+                    textShadow: "0 1px 2px rgba(0,0,0,0.7)",
+                    whiteSpace: "nowrap",
+                  }}
                 >
                   {bar.tickText?.[tickIndex] ?? formatColorbarTick(tick, bar.title)}
                 </div>
@@ -2306,7 +2850,11 @@ export default function BasemapThree(props: {
           />
           <div style={{ position: "relative", height: 18, marginTop: 4 }}>
             {bathyColorbar.ticks.map((tick, tickIndex) => {
-              const t = clamp((tick - bathyColorbar.min) / Math.max(1e-9, bathyColorbar.max - bathyColorbar.min), 0, 1);
+              const t = clamp(
+                (tick - bathyColorbar.min) / Math.max(1e-9, bathyColorbar.max - bathyColorbar.min),
+                0,
+                1
+              );
               return (
                 <div
                   key={`bathy-h-${tick}`}

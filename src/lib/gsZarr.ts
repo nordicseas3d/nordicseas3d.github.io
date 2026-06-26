@@ -12,7 +12,8 @@ export type GsZarrMeta = {
   storeUrl: string;
   lon: number[];
   lat: number[];
-  z: number[]; // meters (typically negative down)
+  z: number[]; // U/V/T/S cell-center depths, meters (typically negative down)
+  zl: number[]; // W interface depths (Zl), meters (negative down); falls back to z
   timeIso: string[]; // YYYY-MM-DD
   variables: GsZarrVariable[];
 };
@@ -315,6 +316,17 @@ export async function loadGsZarrMeta(): Promise<GsZarrMeta> {
     }
   })();
 
+  // Vertical coordinate for W (interfaces). Falls back to Z if Zl is absent.
+  const zlVals = await (async () => {
+    try {
+      const zlArr = await openArray(storeUrl, "Zl");
+      const zlFull = await zarr.get(zlArr);
+      return ensureNegativeDown(Array.from(zlFull.data as any, (v: any) => Number(v)));
+    } catch {
+      return zVals;
+    }
+  })();
+
   const variables: GsZarrVariable[] = await Promise.all(
     (["T", "S", "rho"] as const).map(async (id) => {
       const attrs = zmeta?.metadata?.[`${id}/.zattrs`];
@@ -336,9 +348,50 @@ export async function loadGsZarrMeta(): Promise<GsZarrMeta> {
     lon: lonLat.lon,
     lat: lonLat.lat,
     z: zVals,
+    zl: zlVals,
     timeIso,
     variables,
   };
+}
+
+// Load a full 3-D volume [nz, ny, nx] for one variable at one time index.
+// Used by the Lagrangian particle tracker (U_cgrid, V_cgrid, W).
+export async function loadVolume3D(
+  storeUrl: string,
+  name: string,
+  tIndex: number
+): Promise<{ data: Float32Array; nz: number; ny: number; nx: number }> {
+  const key = `${storeUrl}|${name}|vol3d|${tIndex}`;
+  return cachePromise(field3DCache, key, 12, async () => {
+    const arr = await openArray(storeUrl, name);
+    const out = await zarr.get(arr, [tIndex, null, null, null] as any);
+    const shape = out.shape;
+    if (shape.length !== 3) {
+      throw new Error(`Expected 3D volume for ${name}, got shape [${shape.join(",")}]`);
+    }
+    return { data: ensureFloat32(out.data as any), nz: shape[0], ny: shape[1], nx: shape[2] };
+  });
+}
+
+// Load only a vertical band of levels [k0, k1) at one time index. Used to avoid
+// downloading all 72 depth levels when particles only span a few of them.
+export async function loadVolumeLevels(
+  storeUrl: string,
+  name: string,
+  tIndex: number,
+  k0: number,
+  k1: number
+): Promise<{ data: Float32Array; nz: number; ny: number; nx: number }> {
+  const key = `${storeUrl}|${name}|vol3d|${tIndex}|${k0}:${k1}`;
+  return cachePromise(field3DCache, key, 16, async () => {
+    const arr = await openArray(storeUrl, name);
+    const out = await zarr.get(arr, [tIndex, zarr.slice(k0, k1), null, null] as any);
+    const shape = out.shape;
+    if (shape.length !== 3) {
+      throw new Error(`Expected 3D band for ${name}, got shape [${shape.join(",")}]`);
+    }
+    return { data: ensureFloat32(out.data as any), nz: shape[0], ny: shape[1], nx: shape[2] };
+  });
 }
 
 export function nearestIndex(values: number[], target: number) {

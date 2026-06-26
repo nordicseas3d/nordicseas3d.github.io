@@ -13,6 +13,7 @@ declare module "three" {
   export const BoxGeometry: any;
   export const BufferAttribute: any;
   export const BufferGeometry: any;
+  export const CanvasTexture: any;
   export const Color: any;
   export const DirectionalLight: any;
   export const DoubleSide: any;
@@ -37,6 +38,9 @@ declare module "three" {
   export const Raycaster: any;
   export const SRGBColorSpace: any;
   export const Scene: any;
+  export const Sprite: any;
+  export const SpriteMaterial: any;
+  export const Texture: any;
   export const Vector2: any;
   export const Vector3: any;
   export const WebGLRenderer: any;
@@ -44,6 +48,7 @@ declare module "three" {
   export type BoxGeometry = any;
   export type BufferAttribute = any;
   export type BufferGeometry = any;
+  export type CanvasTexture = any;
   export type Color = any;
   export type DirectionalLight = any;
   export type Float32BufferAttribute = any;
@@ -65,6 +70,9 @@ declare module "three" {
   export type Quaternion = any;
   export type Raycaster = any;
   export type Scene = any;
+  export type Sprite = any;
+  export type SpriteMaterial = any;
+  export type Texture = any;
   export type Vector2 = any;
   export type Vector3 = any;
   export type WebGLRenderer = any;

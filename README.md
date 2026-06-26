@@ -9,6 +9,7 @@ Interactive browser viewer for Nordic Seas ocean fields. The app reads a Zarr st
 - User-drawn transects between two picked map points
 - 3D class clouds for value bands through the water column
 - Isosurface mode for isothermal, isohaline, and isopycnal depth sheets
+- Particle tracking mode for illustrative 3D Lagrangian paths through U/V/W
 - Eddy detection / eddy volume view
 - Optional topography, wind-stress, and sea-ice layers
 - Depth-resolved ocean-current vectors in both Plotly and Three renderers
@@ -24,6 +25,7 @@ Interactive browser viewer for Nordic Seas ocean fields. The app reads a Zarr st
 - `Draw`: adjust the view angle first, click `Draw line`, then click two map points. Click `Clear` to remove the line and restart.
 - `Class`: render point-cloud classes for a configurable min/max range, interval, half-width, and density.
 - `Isosurface`: show the shallowest depth where the active variable reaches a target value. The surface is colored by depth, and hover still reports the selected field value.
+- `Particles`: set depth under `Tempo-spatial`, turn on `Click to seed`, click wet map points, then run 3D trajectories in the Three viewer. The default run length is 360 days. Seeds are kept above local bathymetry, background overlays are hidden while placing/running tracks and can be adjusted again after tracking finishes. Trajectories can be colored by depth, age, speed, particle ID, or sampled scalar fields such as temperature.
 - `Eddies`: inspect detected warm/cold anomaly structures and their tracks.
 
 ## Variables and overlays
@@ -90,15 +92,17 @@ Supported velocity fields:
 
 - `U_cgrid`
 - `V_cgrid`
+- `W`
 
 Expected coordinates:
 
 - `lon`
 - `lat`
 - `Z`
+- `Zl`
 - `time`
 
-If `Z` is missing, the loader falls back to `drF` to derive depth centers. If `lon` / `lat` cannot be read from the Zarr store, the app falls back to bathymetry JSON coordinates.
+If `Z` is missing, the loader falls back to `drF` to derive depth centers. `Zl` is used for vertical velocity interfaces and falls back to `Z` when absent. If `lon` / `lat` cannot be read from the Zarr store, the app falls back to bathymetry JSON coordinates.
 
 The bundled local fields are coarsened from the original data to a `312 x 320` horizontal grid.
 
@@ -109,6 +113,7 @@ The bundled dataset currently exposes:
 - `rho`: `[73, 72, 312, 320]`
 - `U_cgrid`: `[73, 72, 312, 320]`
 - `V_cgrid`: `[73, 72, 312, 320]`
+- `W`: `[73, 72, 312, 320]`
 - `SIarea`: `[73, 312, 320]`
 - `uwind_stress`: `[73, 312, 320]`
 - `vwind_stress`: `[73, 312, 320]`
@@ -116,7 +121,12 @@ The bundled dataset currently exposes:
 - `lon`: `[312, 320]`
 - `lat`: `[312, 320]`
 - `Z`: `[72]`
+- `Zl`: `[72]`
 - `time`: `[73]`
+
+### Particle tracking notes
+
+Particle tracking is intended for interactive exploration, not production-grade trajectory analysis. It integrates with RK4 through the time-varying U/V/W field, uses wet-neighbor weighted spatial interpolation, linearly interpolates between 5-day snapshots, and caps numerical substeps at 1 day. Seeds follow the currently selected depth; if the selected depth is below local bathymetry, the seed is lifted just above the bottom. Runs stop when particles hit land, bottom, the data edge, or unavailable velocity data. Trajectory colors are rendered in Three with a map colorbar; scalar color modes sample the selected date snapshot along the finished paths. During trajectory playback, the side readout shows day/date, depth, temperature, and first-path start/current/end labels.
 
 ### Bathymetry
 
